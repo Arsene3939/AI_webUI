@@ -1,12 +1,12 @@
 """
-Thread-safe Task Manager for MiniMax-H3 WebUI.
-Ensures generation jobs continue running in the background even if mobile phones sleep,
-switch tabs, or drop network connection.
+Thread-safe Task Manager for MiniMax-H3 WebUI with per-device isolation.
+Ensures generation jobs continue running in the background while keeping different devices strictly isolated.
 """
 import os
 import json
 import time
 import uuid
+import shutil
 import threading
 from typing import Dict, Any, Optional, List
 import requests
@@ -14,6 +14,8 @@ from config import COMFY_SERVER_URL, OUTPUT_DIR
 from comfy_client import queue_prompt, download_output_file, check_server
 
 HISTORY_FILE = os.path.join(OUTPUT_DIR, "task_history.json")
+INPUTS_ARCHIVE_DIR = os.path.join(OUTPUT_DIR, "inputs")
+os.makedirs(INPUTS_ARCHIVE_DIR, exist_ok=True)
 
 
 class Task:
@@ -23,11 +25,13 @@ class Task:
         task_type: str,
         prompt: str,
         params: Dict[str, Any],
+        device_id: str = "default",
     ):
         self.task_id = task_id
         self.task_type = task_type  # 'I2V', 'T2V', 'R2V'
         self.prompt = prompt
-        self.params = params
+        self.params = params or {}
+        self.device_id = device_id
         self.prompt_id: Optional[str] = None
         self.status = "queued"  # 'queued', 'running', 'completed', 'failed'
         self.progress = 0.05
@@ -42,6 +46,8 @@ class Task:
             "task_id": self.task_id,
             "task_type": self.task_type,
             "prompt": self.prompt,
+            "params": self.params,
+            "device_id": self.device_id,
             "prompt_id": self.prompt_id,
             "status": self.status,
             "progress": self.progress,
@@ -58,7 +64,8 @@ class Task:
             task_id=data["task_id"],
             task_type=data.get("task_type", "I2V"),
             prompt=data.get("prompt", ""),
-            params={},
+            params=data.get("params", {}),
+            device_id=data.get("device_id", "default"),
         )
         t.prompt_id = data.get("prompt_id")
         t.status = data.get("status", "completed")
@@ -75,7 +82,6 @@ class TaskManager:
     def __init__(self):
         self._lock = threading.Lock()
         self._tasks: Dict[str, Task] = {}
-        self._latest_task_id: Optional[str] = None
         self._load_history()
 
     def _load_history(self):
@@ -86,7 +92,6 @@ class TaskManager:
                     for item in data:
                         t = Task.from_dict(item)
                         self._tasks[t.task_id] = t
-                        self._latest_task_id = t.task_id
             except Exception:
                 pass
 
@@ -94,37 +99,75 @@ class TaskManager:
         try:
             items = []
             with self._lock:
-                # Save latest 50 completed tasks
-                for t in sorted(self._tasks.values(), key=lambda x: x.created_at, reverse=True)[:50]:
+                for t in sorted(self._tasks.values(), key=lambda x: x.created_at, reverse=True)[:100]:
                     items.append(t.to_dict())
             with open(HISTORY_FILE, "w", encoding="utf-8") as f:
                 json.dump(items, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
-    def create_task(self, task_type: str, prompt: str, params: Dict[str, Any]) -> Task:
+    def _archive_file(self, file_path: Optional[str], task_id: str, prefix: str) -> Optional[str]:
+        if not file_path or not os.path.exists(file_path):
+            return None
+        try:
+            ext = os.path.splitext(file_path)[1]
+            dest_name = f"{task_id}_{prefix}{ext}"
+            dest_path = os.path.join(INPUTS_ARCHIVE_DIR, dest_name)
+            shutil.copy2(file_path, dest_path)
+            return dest_path
+        except Exception:
+            return file_path
+
+    def create_task(
+        self,
+        task_type: str,
+        prompt: str,
+        params: Dict[str, Any],
+        device_id: str = "default",
+    ) -> Task:
         task_id = f"task_{int(time.time())}_{uuid.uuid4().hex[:6]}"
-        task = Task(task_id, task_type, prompt, params)
+        
+        # Archive media files so they persist for later restoration
+        saved_params = dict(params)
+        for k, v in list(saved_params.items()):
+            if isinstance(v, str) and os.path.isfile(v):
+                saved_params[k] = self._archive_file(v, task_id, k)
+
+        task = Task(task_id, task_type, prompt, saved_params, device_id=device_id)
         with self._lock:
             self._tasks[task_id] = task
-            self._latest_task_id = task_id
+        self._save_history()
         return task
 
-    def get_task(self, task_id: Optional[str]) -> Optional[Task]:
+    def get_task(self, task_id: Optional[str], device_id: Optional[str] = None) -> Optional[Task]:
         if not task_id:
             return None
         with self._lock:
-            return self._tasks.get(task_id)
+            task = self._tasks.get(task_id)
+            if not task:
+                return None
+            if device_id and task.device_id != device_id:
+                # Strictly isolate from other devices!
+                return None
+            return task
 
-    def get_latest_task(self) -> Optional[Task]:
+    def get_latest_task_for_device(self, device_id: Optional[str]) -> Optional[Task]:
+        if not device_id:
+            return None
         with self._lock:
-            if self._latest_task_id:
-                return self._tasks.get(self._latest_task_id)
+            matching = [t for t in self._tasks.values() if t.device_id == device_id]
+            if matching:
+                return max(matching, key=lambda x: x.created_at)
             return None
 
-    def get_all_completed_tasks(self) -> List[Task]:
+    def get_completed_tasks_for_device(self, device_id: Optional[str]) -> List[Task]:
+        if not device_id:
+            return []
         with self._lock:
-            tasks = [t for t in self._tasks.values() if t.status == "completed" and t.video_path and os.path.exists(t.video_path)]
+            tasks = [
+                t for t in self._tasks.values()
+                if t.device_id == device_id and t.status == "completed" and t.video_path and os.path.exists(t.video_path)
+            ]
             return sorted(tasks, key=lambda x: x.created_at, reverse=True)
 
     def start_background_task(self, task: Task, prompt_graph: Dict[str, Any], server_url: str = COMFY_SERVER_URL):

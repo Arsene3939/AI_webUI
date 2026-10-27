@@ -1,9 +1,10 @@
 """
-MiniMax-H3 Mobile-Friendly Gradio WebUI with Persistent Session & Background Task Management.
-Designed for seamless mobile usage with auto-reconnect and background execution.
+MiniMax-H3 Mobile-Friendly Gradio WebUI with Persistent Session, Input Restoration,
+and Strict Per-Device Isolation.
 """
 import os
 import time
+import uuid
 import random
 import gradio as gr
 from config import (
@@ -88,9 +89,10 @@ lan_ip = get_lan_ip()
 server_ok, server_status_msg = check_server(COMFY_SERVER_URL)
 
 
-def build_header_html(status_text=None):
+def build_header_html(status_text=None, device_id=None):
     if status_text is None:
         _, status_text = check_server(COMFY_SERVER_URL)
+    dev_str = f" | 📱 裝置識別: <code>{device_id[:8]}...</code>" if device_id else ""
     return f"""
     <div class="header-card">
         <h2 style="margin: 0 0 8px 0; font-size: 1.5rem;">🎬 MiniMax-H3 全模態影片生成系統</h2>
@@ -98,9 +100,10 @@ def build_header_html(status_text=None):
             📱 <b>手機內網連線網址：</b> <span class="ip-badge">http://{lan_ip}:{WEBUI_PORT}</span>
             <span style="margin-left: 12px;">|</span>
             <span style="margin-left: 12px;">🖥️ 後端狀態：<b>{status_text}</b></span>
+            {dev_str}
         </div>
         <div style="font-size: 0.85rem; color: #94a3b8; margin-top: 6px;">
-            💡 支援手機待機自動執行：生成任務由主機在背景持續運算，手機鎖屏或換分頁皆不受影響。
+            💡 裝置隔離保護：每個裝置只會存取並恢復自己的任務與輸入參數，完全與其他裝置隔離。
         </div>
     </div>
     """
@@ -118,16 +121,42 @@ def generate_random_seed():
     return random.randint(1, 999999999999999)
 
 
-def recover_task_status(stored_task_id):
-    """Recovers the active or latest task status for mobile reconnect."""
-    task = task_manager.get_task(stored_task_id) or task_manager.get_latest_task()
-    if not task:
-        return "ℹ️ 目前尚無執行中或已完成的任務紀錄。", None, stored_task_id
+def get_history_dropdown_choices(device_id):
+    if not device_id:
+        return []
+    completed = task_manager.get_completed_tasks_for_device(device_id)
+    choices = []
+    for t in completed:
+        t_str = time.strftime("%m/%d %H:%M", time.localtime(t.created_at))
+        short_prompt = (t.prompt[:30] + "...") if len(t.prompt) > 30 else t.prompt
+        label = f"[{t.task_type}] {t_str} | {short_prompt}"
+        choices.append((label, t.task_id))
+    return choices
 
-    return task.message, task.video_path, task.task_id
+
+def on_select_history_item(selected_task_id, device_id):
+    if not selected_task_id:
+        return None, "請選擇上方歷史任務"
+    task = task_manager.get_task(selected_task_id, device_id=device_id)
+    if not task or not task.video_path or not os.path.exists(task.video_path):
+        return None, "⚠️ 找不到該影片檔案（可能已被移除或不屬於此裝置）"
+    
+    t_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(task.created_at))
+    info_md = f"""
+    ### 📜 任務詳細資料
+    * **任務類型**：`{task.task_type}`
+    * **建立時間**：{t_str}
+    * **生成耗時**：{task.elapsed} 秒
+    * **檔案路徑**：`{os.path.basename(task.video_path)}`
+    * **完整提示詞**：
+    ```text
+    {task.prompt}
+    ```
+    """
+    return task.video_path, info_md
 
 
-# --- Generation Handlers with Detached Background Execution ---
+# --- Generation Handlers with Input Archiving & Device Isolation ---
 
 def handle_i2v_generate(
     first_frame,
@@ -148,13 +177,17 @@ def handle_i2v_generate(
     video_vae,
     audio_vae,
     current_session_task,
+    device_id,
 ):
+    if not device_id:
+        device_id = f"dev_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+
     if not first_frame:
-        yield "❌ 請至少上傳「首幀圖片」！", None, current_session_task
+        yield "❌ 請至少上傳「首幀圖片」！", None, current_session_task, device_id
         return
 
     if not prompt or not prompt.strip():
-        yield "❌ 提示詞 (Prompt) 不可為空！", None, current_session_task
+        yield "❌ 提示詞 (Prompt) 不可為空！", None, current_session_task, device_id
         return
 
     w, h = custom_w, custom_h
@@ -163,12 +196,12 @@ def handle_i2v_generate(
         if pw and ph:
             w, h = pw, ph
 
-    yield "📤 正在上傳首幀 (及尾幀) 圖片至 ComfyUI...", None, current_session_task
+    yield "📤 正在上傳首幀 (及尾幀) 圖片至 ComfyUI...", None, current_session_task, device_id
     try:
         first_frame_fn = upload_media_file(first_frame)
         last_frame_fn = upload_media_file(last_frame) if last_frame else None
     except Exception as e:
-        yield f"❌ 上傳圖片失敗: {str(e)}", None, current_session_task
+        yield f"❌ 上傳圖片失敗: {str(e)}", None, current_session_task, device_id
         return
 
     prompt_graph = build_i2v_workflow(
@@ -190,14 +223,35 @@ def handle_i2v_generate(
         audio_vae_name=audio_vae,
     )
 
-    task = task_manager.create_task("I2V", prompt, {"width": w, "height": h, "seed": seed})
+    # Save full parameters for complete state restoration
+    saved_params = {
+        "first_frame": first_frame,
+        "last_frame": last_frame,
+        "prompt": prompt,
+        "res_preset": res_preset,
+        "custom_w": custom_w,
+        "custom_h": custom_h,
+        "duration": duration,
+        "seed": seed,
+        "steps": steps,
+        "denoise": denoise,
+        "sampler": sampler,
+        "scheduler": scheduler,
+        "fps": fps,
+        "unet_name": unet_name,
+        "clip_name": clip_name,
+        "video_vae": video_vae,
+        "audio_vae": audio_vae,
+    }
+
+    task = task_manager.create_task("I2V", prompt, saved_params, device_id=device_id)
     task_manager.start_background_task(task, prompt_graph)
 
     while True:
-        t = task_manager.get_task(task.task_id)
+        t = task_manager.get_task(task.task_id, device_id=device_id)
         if not t:
             break
-        yield t.message, t.video_path, t.task_id
+        yield t.message, t.video_path, t.task_id, device_id
         if t.status in ["completed", "failed"]:
             break
         time.sleep(1.5)
@@ -220,9 +274,13 @@ def handle_t2v_generate(
     video_vae,
     audio_vae,
     current_session_task,
+    device_id,
 ):
+    if not device_id:
+        device_id = f"dev_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+
     if not prompt or not prompt.strip():
-        yield "❌ 提示詞 (Prompt) 不可為空！", None, current_session_task
+        yield "❌ 提示詞 (Prompt) 不可為空！", None, current_session_task, device_id
         return
 
     w, h = custom_w, custom_h
@@ -248,14 +306,32 @@ def handle_t2v_generate(
         audio_vae_name=audio_vae,
     )
 
-    task = task_manager.create_task("T2V", prompt, {"width": w, "height": h, "seed": seed})
+    saved_params = {
+        "prompt": prompt,
+        "res_preset": res_preset,
+        "custom_w": custom_w,
+        "custom_h": custom_h,
+        "duration": duration,
+        "seed": seed,
+        "steps": steps,
+        "denoise": denoise,
+        "sampler": sampler,
+        "scheduler": scheduler,
+        "fps": fps,
+        "unet_name": unet_name,
+        "clip_name": clip_name,
+        "video_vae": video_vae,
+        "audio_vae": audio_vae,
+    }
+
+    task = task_manager.create_task("T2V", prompt, saved_params, device_id=device_id)
     task_manager.start_background_task(task, prompt_graph)
 
     while True:
-        t = task_manager.get_task(task.task_id)
+        t = task_manager.get_task(task.task_id, device_id=device_id)
         if not t:
             break
-        yield t.message, t.video_path, t.task_id
+        yield t.message, t.video_path, t.task_id, device_id
         if t.status in ["completed", "failed"]:
             break
         time.sleep(1.5)
@@ -285,9 +361,13 @@ def handle_r2v_generate(
     video_vae,
     audio_vae,
     current_session_task,
+    device_id,
 ):
+    if not device_id:
+        device_id = f"dev_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+
     if not prompt or not prompt.strip():
-        yield "❌ 提示詞 (Prompt) 不可為空！", None, current_session_task
+        yield "❌ 提示詞 (Prompt) 不可為空！", None, current_session_task, device_id
         return
 
     w, h = custom_w, custom_h
@@ -296,7 +376,7 @@ def handle_r2v_generate(
         if pw and ph:
             w, h = pw, ph
 
-    yield "📤 正在上傳參考多媒體素材至 ComfyUI...", None, current_session_task
+    yield "📤 正在上傳參考多媒體素材至 ComfyUI...", None, current_session_task, device_id
 
     ref_img_files = []
     for img in [ref_img_1, ref_img_2, ref_img_3, ref_img_4]:
@@ -305,7 +385,7 @@ def handle_r2v_generate(
                 fn = upload_media_file(img)
                 ref_img_files.append(fn)
             except Exception as e:
-                yield f"❌ 上傳參考圖失敗: {str(e)}", None, current_session_task
+                yield f"❌ 上傳參考圖失敗: {str(e)}", None, current_session_task, device_id
                 return
 
     ref_video_fn = None
@@ -313,7 +393,7 @@ def handle_r2v_generate(
         try:
             ref_video_fn = upload_media_file(ref_video)
         except Exception as e:
-            yield f"❌ 上傳參考影片失敗: {str(e)}", None, current_session_task
+            yield f"❌ 上傳參考影片失敗: {str(e)}", None, current_session_task, device_id
             return
 
     ref_audio_fn = None
@@ -321,7 +401,7 @@ def handle_r2v_generate(
         try:
             ref_audio_fn = upload_media_file(ref_audio)
         except Exception as e:
-            yield f"❌ 上傳參考音訊失敗: {str(e)}", None, current_session_task
+            yield f"❌ 上傳參考音訊失敗: {str(e)}", None, current_session_task, device_id
             return
 
     prompt_graph = build_r2v_workflow(
@@ -345,58 +425,142 @@ def handle_r2v_generate(
         audio_vae_name=audio_vae,
     )
 
-    task = task_manager.create_task("R2V", prompt, {"width": w, "height": h, "seed": seed})
+    saved_params = {
+        "prompt": prompt,
+        "ref_img_1": ref_img_1,
+        "ref_img_2": ref_img_2,
+        "ref_img_3": ref_img_3,
+        "ref_img_4": ref_img_4,
+        "ref_video": ref_video,
+        "ref_audio": ref_audio,
+        "ref_image_size": ref_image_size,
+        "res_preset": res_preset,
+        "custom_w": custom_w,
+        "custom_h": custom_h,
+        "duration": duration,
+        "seed": seed,
+        "steps": steps,
+        "denoise": denoise,
+        "sampler": sampler,
+        "scheduler": scheduler,
+        "fps": fps,
+        "unet_name": unet_name,
+        "clip_name": clip_name,
+        "video_vae": video_vae,
+        "audio_vae": audio_vae,
+    }
+
+    task = task_manager.create_task("R2V", prompt, saved_params, device_id=device_id)
     task_manager.start_background_task(task, prompt_graph)
 
     while True:
-        t = task_manager.get_task(task.task_id)
+        t = task_manager.get_task(task.task_id, device_id=device_id)
         if not t:
             break
-        yield t.message, t.video_path, t.task_id
+        yield t.message, t.video_path, t.task_id, device_id
         if t.status in ["completed", "failed"]:
             break
         time.sleep(1.5)
 
 
-# --- Gallery Helpers ---
+# --- Full State Restoration Callback for demo.load and Recover Buttons ---
 
-def get_history_dropdown_choices():
-    completed = task_manager.get_all_completed_tasks()
-    choices = []
-    for t in completed:
-        t_str = time.strftime("%m/%d %H:%M", time.localtime(t.created_at))
-        short_prompt = (t.prompt[:30] + "...") if len(t.prompt) > 30 else t.prompt
-        label = f"[{t.task_type}] {t_str} | {short_prompt}"
-        choices.append((label, t.task_id))
-    return choices
-
-
-def on_select_history_item(selected_task_id):
-    if not selected_task_id:
-        return None, "請選擇上方歷史任務"
-    task = task_manager.get_task(selected_task_id)
-    if not task or not task.video_path or not os.path.exists(task.video_path):
-        return None, "⚠️ 找不到該影片檔案（可能已被移除）"
-    
-    t_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t.created_at))
-    info_md = f"""
-    ### 📜 任務詳細資料
-    * **任務類型**：`{task.task_type}`
-    * **建立時間**：{t_str}
-    * **生成耗時**：{task.elapsed} 秒
-    * **檔案路徑**：`{os.path.basename(task.video_path)}`
-    * **完整提示詞**：
-    ```text
-    {task.prompt}
-    ```
+def restore_device_state(stored_device_id, stored_task_id):
     """
-    return task.video_path, info_md
+    Called on page load (demo.load) or recover button click.
+    Restores all inputs, parameters, and generated video for THIS specific device only.
+    """
+    if not stored_device_id:
+        stored_device_id = f"dev_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+
+    # Fetch task for THIS device only (No cross-device leakage!)
+    task = task_manager.get_task(stored_task_id, device_id=stored_device_id) or task_manager.get_latest_task_for_device(stored_device_id)
+
+    # Defaults (Leave untouched if no task)
+    i2v_updates = [gr.update()] * 15
+    t2v_updates = [gr.update()] * 13
+    r2v_updates = [gr.update()] * 19
+    history_choices = get_history_dropdown_choices(stored_device_id)
+
+    if task and task.params:
+        p = task.params
+        if task.task_type == "I2V":
+            i2v_updates = [
+                gr.update(value=p.get("first_frame")),
+                gr.update(value=p.get("last_frame")),
+                gr.update(value=p.get("prompt", task.prompt)),
+                gr.update(value=p.get("res_preset", "16:9 橫向風景 (1344 x 768)")),
+                gr.update(value=p.get("custom_w", 1344)),
+                gr.update(value=p.get("custom_h", 768)),
+                gr.update(value=p.get("duration", 2.0)),
+                gr.update(value=p.get("seed", 1)),
+                gr.update(value=p.get("steps", 20)),
+                gr.update(value=p.get("denoise", 1.0)),
+                gr.update(value=p.get("fps", 24)),
+                gr.update(value=p.get("sampler", "res_multistep")),
+                gr.update(value=p.get("scheduler", "simple")),
+                gr.update(value=task.message),
+                gr.update(value=task.video_path if task.video_path and os.path.exists(task.video_path) else None),
+            ]
+        elif task.task_type == "T2V":
+            t2v_updates = [
+                gr.update(value=p.get("prompt", task.prompt)),
+                gr.update(value=p.get("res_preset", "16:9 橫向風景 (1344 x 768)")),
+                gr.update(value=p.get("custom_w", 1344)),
+                gr.update(value=p.get("custom_h", 768)),
+                gr.update(value=p.get("duration", 2.0)),
+                gr.update(value=p.get("seed", 1)),
+                gr.update(value=p.get("steps", 20)),
+                gr.update(value=p.get("denoise", 1.0)),
+                gr.update(value=p.get("fps", 24)),
+                gr.update(value=p.get("sampler", "res_multistep")),
+                gr.update(value=p.get("scheduler", "simple")),
+                gr.update(value=task.message),
+                gr.update(value=task.video_path if task.video_path and os.path.exists(task.video_path) else None),
+            ]
+        elif task.task_type == "R2V":
+            r2v_updates = [
+                gr.update(value=p.get("prompt", task.prompt)),
+                gr.update(value=p.get("ref_video")),
+                gr.update(value=p.get("ref_audio")),
+                gr.update(value=p.get("ref_img_1")),
+                gr.update(value=p.get("ref_img_2")),
+                gr.update(value=p.get("ref_img_3")),
+                gr.update(value=p.get("ref_img_4")),
+                gr.update(value=p.get("ref_image_size", "match")),
+                gr.update(value=p.get("res_preset", "16:9 橫向風景 (1344 x 768)")),
+                gr.update(value=p.get("custom_w", 1344)),
+                gr.update(value=p.get("custom_h", 768)),
+                gr.update(value=p.get("duration", 3.0)),
+                gr.update(value=p.get("seed", 1)),
+                gr.update(value=p.get("steps", 20)),
+                gr.update(value=p.get("denoise", 1.0)),
+                gr.update(value=p.get("fps", 24)),
+                gr.update(value=p.get("sampler", "res_multistep")),
+                gr.update(value=p.get("scheduler", "simple")),
+                gr.update(value=task.message),
+                gr.update(value=task.video_path if task.video_path and os.path.exists(task.video_path) else None),
+            ]
+
+    active_task_id = task.task_id if task else stored_task_id
+    header = build_header_html(device_id=stored_device_id)
+
+    return (
+        stored_device_id,
+        active_task_id,
+        header,
+        gr.update(choices=history_choices),
+        *i2v_updates,
+        *t2v_updates,
+        *r2v_updates,
+    )
 
 
 # --- UI Definition ---
 
 with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
-    # BrowserState stores the current active task ID in the mobile browser's LocalStorage!
+    # Strictly isolated persistent states per browser/device LocalStorage
+    device_id_state = gr.BrowserState(default_value="", storage_key="minimax_device_id")
     session_task_state = gr.BrowserState(default_value="", storage_key="minimax_active_task_id")
 
     header_html = gr.HTML(build_header_html(server_status_msg))
@@ -407,16 +571,16 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
     
     backend_status_msg = gr.Markdown("")
 
-    def on_start_backend():
+    def on_start_backend(dev_id):
         ok, msg = start_comfyui_backend(COMFY_SERVER_URL)
-        return build_header_html(msg), f"**狀態反饋**：{msg}"
+        return build_header_html(msg, dev_id), f"**狀態反饋**：{msg}"
 
-    def on_refresh_status():
+    def on_refresh_status(dev_id):
         ok, msg = check_server(COMFY_SERVER_URL)
-        return build_header_html(msg), f"**目前狀態**：{msg}"
+        return build_header_html(msg, dev_id), f"**目前狀態**：{msg}"
 
-    start_backend_btn.click(on_start_backend, outputs=[header_html, backend_status_msg])
-    refresh_status_btn.click(on_refresh_status, outputs=[header_html, backend_status_msg])
+    start_backend_btn.click(on_start_backend, inputs=[device_id_state], outputs=[header_html, backend_status_msg])
+    refresh_status_btn.click(on_refresh_status, inputs=[device_id_state], outputs=[header_html, backend_status_msg])
 
     with gr.Tabs() as tabs:
         # ==========================================
@@ -475,7 +639,7 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                 with gr.Column(scale=1):
                     with gr.Row():
                         i2v_status = gr.Markdown("🟢 準備就緒，點擊按鈕即可開始生成。")
-                        i2v_recover_btn = gr.Button("🔄 恢復/刷新當前進度", variant="secondary", size="sm")
+                        i2v_recover_btn = gr.Button("🔄 恢復本機最後進度與輸入", variant="secondary", size="sm")
 
                     i2v_output_video = gr.Video(label="生成結果影片 (自帶原生立體聲音效)", autoplay=True, interactive=False)
 
@@ -488,14 +652,9 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                     i2v_custom_w, i2v_custom_h, i2v_duration, i2v_seed,
                     i2v_steps, i2v_denoise, i2v_sampler, i2v_scheduler, i2v_fps,
                     i2v_unet, i2v_clip, i2v_v_vae, i2v_a_vae,
-                    session_task_state
+                    session_task_state, device_id_state
                 ],
-                outputs=[i2v_status, i2v_output_video, session_task_state]
-            )
-            i2v_recover_btn.click(
-                recover_task_status,
-                inputs=[session_task_state],
-                outputs=[i2v_status, i2v_output_video, session_task_state]
+                outputs=[i2v_status, i2v_output_video, session_task_state, device_id_state]
             )
 
         # ==========================================
@@ -550,7 +709,7 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                 with gr.Column(scale=1):
                     with gr.Row():
                         t2v_status = gr.Markdown("🟢 準備就緒，點擊按鈕即可開始生成。")
-                        t2v_recover_btn = gr.Button("🔄 恢復/刷新當前進度", variant="secondary", size="sm")
+                        t2v_recover_btn = gr.Button("🔄 恢復本機最後進度與輸入", variant="secondary", size="sm")
 
                     t2v_output_video = gr.Video(label="生成結果影片 (自帶原生立體聲音效)", autoplay=True, interactive=False)
 
@@ -563,14 +722,9 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                     t2v_custom_w, t2v_custom_h, t2v_duration, t2v_seed,
                     t2v_steps, t2v_denoise, t2v_sampler, t2v_scheduler, t2v_fps,
                     t2v_unet, t2v_clip, t2v_v_vae, t2v_a_vae,
-                    session_task_state
+                    session_task_state, device_id_state
                 ],
-                outputs=[t2v_status, t2v_output_video, session_task_state]
-            )
-            t2v_recover_btn.click(
-                recover_task_status,
-                inputs=[session_task_state],
-                outputs=[t2v_status, t2v_output_video, session_task_state]
+                outputs=[t2v_status, t2v_output_video, session_task_state, device_id_state]
             )
 
         # ==========================================
@@ -643,7 +797,7 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                 with gr.Column(scale=1):
                     with gr.Row():
                         r2v_status = gr.Markdown("🟢 準備就緒，點擊按鈕即可開始生成。")
-                        r2v_recover_btn = gr.Button("🔄 恢復/刷新當前進度", variant="secondary", size="sm")
+                        r2v_recover_btn = gr.Button("🔄 恢復本機最後進度與輸入", variant="secondary", size="sm")
 
                     r2v_output_video = gr.Video(label="生成結果影片 (自帶原生立體聲音效)", autoplay=True, interactive=False)
 
@@ -657,25 +811,20 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                     r2v_custom_w, r2v_custom_h, r2v_duration, r2v_seed,
                     r2v_steps, r2v_denoise, r2v_sampler, r2v_scheduler, r2v_fps,
                     r2v_unet, r2v_clip, r2v_v_vae, r2v_a_vae,
-                    session_task_state
+                    session_task_state, device_id_state
                 ],
-                outputs=[r2v_status, r2v_output_video, session_task_state]
-            )
-            r2v_recover_btn.click(
-                recover_task_status,
-                inputs=[session_task_state],
-                outputs=[r2v_status, r2v_output_video, session_task_state]
+                outputs=[r2v_status, r2v_output_video, session_task_state, device_id_state]
             )
 
         # ==========================================
-        # TAB 4: 📁 歷史成果庫 (History Gallery)
+        # TAB 4: 📁 歷史成果庫 (History Gallery) - Strictly per-device
         # ==========================================
         with gr.Tab("📁 歷史成果庫 (History Gallery)"):
-            gr.Markdown("### 🗄️ 過去生成的影片記錄（手機斷線或待機後產生的成果均會完整保存在此）")
+            gr.Markdown("### 🗄️ 本裝置過去生成的影片記錄（僅顯示本裝置生成成果，嚴格隔離其他裝置）")
             with gr.Row():
-                refresh_history_btn = gr.Button("🔄 刷新歷史列表", variant="secondary", scale=1)
+                refresh_history_btn = gr.Button("🔄 刷新本裝置歷史列表", variant="secondary", scale=1)
                 history_dropdown = gr.Dropdown(
-                    choices=get_history_dropdown_choices(),
+                    choices=[],
                     label="選擇歷史任務 (依時間倒序排列)",
                     scale=4
                 )
@@ -686,14 +835,52 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                     gallery_info = gr.Markdown("點選上方清單即可查看該次生成的詳細資訊與提示詞。")
 
             refresh_history_btn.click(
-                fn=lambda: gr.update(choices=get_history_dropdown_choices()),
+                fn=lambda dev_id: gr.update(choices=get_history_dropdown_choices(dev_id)),
+                inputs=[device_id_state],
                 outputs=[history_dropdown]
             )
             history_dropdown.change(
                 on_select_history_item,
-                inputs=[history_dropdown],
+                inputs=[history_dropdown, device_id_state],
                 outputs=[gallery_video, gallery_info]
             )
+
+    # All outputs collected for full restore
+    all_restored_outputs = [
+        device_id_state,
+        session_task_state,
+        header_html,
+        history_dropdown,
+        # I2V
+        i2v_first_frame, i2v_last_frame, i2v_prompt, i2v_res_preset,
+        i2v_custom_w, i2v_custom_h, i2v_duration, i2v_seed,
+        i2v_steps, i2v_denoise, i2v_fps, i2v_sampler, i2v_scheduler,
+        i2v_status, i2v_output_video,
+        # T2V
+        t2v_prompt, t2v_res_preset,
+        t2v_custom_w, t2v_custom_h, t2v_duration, t2v_seed,
+        t2v_steps, t2v_denoise, t2v_fps, t2v_sampler, t2v_scheduler,
+        t2v_status, t2v_output_video,
+        # R2V
+        r2v_prompt, r2v_video, r2v_audio,
+        r2v_img1, r2v_img2, r2v_img3, r2v_img4,
+        r2v_image_size, r2v_res_preset,
+        r2v_custom_w, r2v_custom_h, r2v_duration, r2v_seed,
+        r2v_steps, r2v_denoise, r2v_fps, r2v_sampler, r2v_scheduler,
+        r2v_status, r2v_output_video,
+    ]
+
+    # Automatic page reload restoration (demo.load)
+    demo.load(
+        restore_device_state,
+        inputs=[device_id_state, session_task_state],
+        outputs=all_restored_outputs,
+    )
+
+    # Manual recover button triggers the exact same comprehensive restoration
+    i2v_recover_btn.click(restore_device_state, inputs=[device_id_state, session_task_state], outputs=all_restored_outputs)
+    t2v_recover_btn.click(restore_device_state, inputs=[device_id_state, session_task_state], outputs=all_restored_outputs)
+    r2v_recover_btn.click(restore_device_state, inputs=[device_id_state, session_task_state], outputs=all_restored_outputs)
 
 if __name__ == "__main__":
     print("=" * 60)
