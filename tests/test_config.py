@@ -107,35 +107,33 @@ class TestResolutionAndAspectRatio:
         assert "9:16 (直向手機)" in ASPECT_RATIOS
         assert "1:1 (正方形)" in ASPECT_RATIOS
         assert 1.0 in MEGAPIXEL_CHOICES
-        assert len(QUALITY_CHOICES) == 5
-        assert len(QUALITY_LEVEL_TO_MP) == 5
+        assert len(QUALITY_CHOICES) == 10
+        assert len(QUALITY_LEVEL_TO_MP) == 10
 
     def test_quality_level_to_mp(self):
-        """Tests converting quality levels 1~5 to corresponding megapixels float."""
-        assert quality_level_to_mp(1) == 0.5
-        assert quality_level_to_mp(2) == 0.75
-        assert quality_level_to_mp(3) == 1.0
-        assert quality_level_to_mp(4) == 1.25
-        assert quality_level_to_mp(5) == 1.5
+        """Tests converting quality levels 1~10 to corresponding megapixels float."""
+        assert quality_level_to_mp(1) == 0.2
+        assert quality_level_to_mp(5) == 1.0
+        assert quality_level_to_mp(10) == 2.0
         # String representations
-        assert quality_level_to_mp("1 (0.5 MP - 極速)") == 0.5
-        assert quality_level_to_mp("3 (1.0 MP - 標準推薦)") == 1.0
-        assert quality_level_to_mp("5 (1.5 MP - 超高畫質)") == 1.5
+        assert quality_level_to_mp("1 (0.2 MP - 極速預覽)") == 0.2
+        assert quality_level_to_mp("5 (1.0 MP - 標準推薦)") == 1.0
+        assert quality_level_to_mp("10 (2.0 MP - 極致高解析)") == 2.0
         assert quality_level_to_mp("1.0 MP") == 1.0
 
     def test_calculate_dimensions_standard_ratios(self):
         """Tests standard 1.0 MP resolution calculations snapped to multiple 32."""
-        # 16:9 at Level 3 (1.0 MP) -> 1344 x 736 (multiples of 32)
-        w, h = calculate_dimensions("16:9 (橫向風景)", megapixels=3)
+        # 16:9 at Level 5 (1.0 MP) -> 1344 x 736 (multiples of 32)
+        w, h = calculate_dimensions("16:9 (橫向風景)", megapixels=5)
         assert (w, h) == (1344, 736)
         assert w % 32 == 0 and h % 32 == 0
 
-        # 9:16 at Level 3 (1.0 MP) -> 736 x 1344 (multiples of 32)
-        w, h = calculate_dimensions("9:16 (直向手機)", megapixels="3 (1.0 MP - 標準推薦)")
+        # 9:16 at Level 5 (1.0 MP) -> 736 x 1344 (multiples of 32)
+        w, h = calculate_dimensions("9:16 (直向手機)", megapixels="5 (1.0 MP - 標準推薦)")
         assert (w, h) == (736, 1344)
         assert w % 32 == 0 and h % 32 == 0
 
-        # 1:1 at Level 3 (1.0 MP) -> 992 x 992 (multiples of 32)
+        # 1:1 at Level 5 (1.0 MP) -> 992 x 992 (multiples of 32)
         w, h = calculate_dimensions("1:1 (正方形)", megapixels=1.0)
         assert (w, h) == (992, 992)
         assert w % 32 == 0 and h % 32 == 0

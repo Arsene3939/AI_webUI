@@ -31,45 +31,55 @@ ASPECT_RATIOS: Dict[str, Tuple[int, int]] = {
     "21:9 (超寬電影)": (21, 9),
 }
 
-MEGAPIXEL_CHOICES = [0.5, 0.75, 1.0, 1.25, 1.5]
+MEGAPIXEL_CHOICES = [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0]
 DEFAULT_MEGAPIXELS = 1.0
 DEFAULT_MULTIPLE = 32
 
-# Quality Levels mapping (1~5 corresponding to Megapixels)
+# Quality Levels mapping (1~10 corresponding to 0.2MP~2.0MP)
 QUALITY_LEVEL_TO_MP: Dict[int, float] = {
-    1: 0.5,
-    2: 0.75,
-    3: 1.0,
-    4: 1.25,
-    5: 1.5,
+    1: 0.2,
+    2: 0.4,
+    3: 0.6,
+    4: 0.8,
+    5: 1.0,
+    6: 1.2,
+    7: 1.4,
+    8: 1.6,
+    9: 1.8,
+    10: 2.0,
 }
 
 QUALITY_CHOICES = [
-    "1 (0.5 MP - 極速)",
-    "2 (0.75 MP - 流暢)",
-    "3 (1.0 MP - 標準推薦)",
-    "4 (1.25 MP - 高畫質)",
-    "5 (1.5 MP - 超高畫質)",
+    "1 (0.2 MP - 極速預覽)",
+    "2 (0.4 MP - 快速生成)",
+    "3 (0.6 MP - 流暢體驗)",
+    "4 (0.8 MP - 均衡畫質)",
+    "5 (1.0 MP - 標準推薦)",
+    "6 (1.2 MP - 高畫質)",
+    "7 (1.4 MP - 優質畫質)",
+    "8 (1.6 MP - 超高畫質)",
+    "9 (1.8 MP - 旗艦細緻)",
+    "10 (2.0 MP - 極致高解析)",
 ]
-DEFAULT_QUALITY_LEVEL = "3 (1.0 MP - 標準推薦)"
+DEFAULT_QUALITY_LEVEL = "5 (1.0 MP - 標準推薦)"
 
 
 def quality_level_to_mp(level_val: Any) -> float:
-    """Converts a quality level (1~5 or string descriptor) or float to megapixels float."""
+    """Converts a quality level (1~10 or string descriptor) or float to megapixels float."""
     # If float passed directly (e.g. 1.0, 0.5, 1.25)
     if isinstance(level_val, float):
         return level_val
 
-    # If int 1..5 passed
+    # If int 1..10 passed
     if isinstance(level_val, int) and level_val in QUALITY_LEVEL_TO_MP:
         return QUALITY_LEVEL_TO_MP[level_val]
 
     if isinstance(level_val, str):
-        # Check if contains MP e.g. "1.0 MP", "3 (1.0 MP - 標準推薦)"
+        # Check if contains MP e.g. "1.0 MP", "5 (1.0 MP - 標準推薦)"
         m = re.search(r"(\d+(?:\.\d+)?)\s*MP", level_val, re.IGNORECASE)
         if m:
             return float(m.group(1))
-        # Plain digit string e.g. "1", "2", "3", "4", "5"
+        # Plain digit string e.g. "1".."10"
         cleaned = level_val.strip()
         if cleaned.isdigit() and int(cleaned) in QUALITY_LEVEL_TO_MP:
             return QUALITY_LEVEL_TO_MP[int(cleaned)]

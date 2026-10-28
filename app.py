@@ -103,6 +103,18 @@ video {
     border-radius: 8px !important;
     background-color: #000;
 }
+
+/* Prevent virtual keyboard on dropdowns for mobile */
+.gr-dropdown input {
+    cursor: pointer !important;
+    -webkit-user-select: none !important;
+    user-select: none !important;
+}
+
+.header-row {
+    align-items: center;
+    margin-bottom: 4px;
+}
 """
 
 lan_ip = get_lan_ip()
@@ -117,13 +129,56 @@ def build_header_html(device_id=None):
         dev_str = ""
     return f"""
     <div class="header-card">
-        <h2 style="margin: 0 0 8px 0; font-size: 1.5rem;">🎬 MiniMax-H3 全模態影片生成系統</h2>
+        <h2 style="margin: 0 0 8px 0; font-size: 1.5rem;">🎬 MiniMax-H3 影片生成系統</h2>
         <div style="font-size: 0.95rem; opacity: 0.9; line-height: 1.6;">
             📱 <b>手機內網連線網址：</b> <span class="ip-badge">http://{lan_ip}:{WEBUI_PORT}</span>
             {dev_str}
         </div>
-        <div style="font-size: 0.85rem; color: #94a3b8; margin-top: 6px;">
-            💡 裝置隔離保護：每個裝置只會存取並恢復自己的任務與輸入參數，完全與其他裝置隔離。
+    </div>
+    """
+
+
+def build_progress_html(task_or_msg) -> str:
+    """
+    Renders a yellow progress bar on a white background with direct step percentage.
+    Calculates percentage strictly based on sampling steps per user specification.
+    Displays clear phase status descriptions above the progress bar during preprocessing,
+    sampling, postprocessing, and completion.
+    """
+    if isinstance(task_or_msg, str):
+        msg = task_or_msg or "🟢 準備就緒"
+        pct = 100 if "完成" in msg or "成功" in msg else 0
+    elif task_or_msg is None:
+        msg = "🟢 準備就緒"
+        pct = 0
+    else:
+        task = task_or_msg
+        msg = getattr(task, "message", "") or "🟢 準備就緒"
+        status = getattr(task, "status", "")
+        stage = getattr(task, "stage", "")
+        step = getattr(task, "step", 0)
+        total_steps = getattr(task, "total_steps", 0)
+
+        if status == "completed":
+            pct = 100
+        elif stage == "postprocessing" or (total_steps > 0 and step >= total_steps):
+            pct = 100
+        elif total_steps > 0:
+            pct = max(0, min(100, int(round((step / total_steps) * 100))))
+        else:
+            pct = 0
+
+    return f"""
+    <div style="width: 100%; margin-bottom: 8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px; font-size: 0.9rem; font-weight: 500; color: #334155;">
+            <div style="flex: 1; min-width: 0; min-height: 2.7em; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; padding-right: 8px;">{msg}</div>
+            <div style="flex-shrink: 0; font-weight: 700; color: #b45309; font-size: 0.95rem; line-height: 1.35;">{pct}%</div>
+        </div>
+        <div style="width: 100%; height: 26px; background-color: #ffffff; border: 1.5px solid #cbd5e1; border-radius: 6px; overflow: hidden; position: relative; box-shadow: inset 0 1px 2px rgba(0,0,0,0.05);">
+            <div style="width: {pct}%; height: 100%; background: linear-gradient(90deg, #fde047 0%, #eab308 100%); transition: width 0.3s ease;"></div>
+            <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; font-size: 0.85rem; font-weight: 700; color: #0f172a; text-shadow: 0 0 2px rgba(255,255,255,0.7);">
+                {pct}%
+            </div>
         </div>
     </div>
     """
@@ -168,10 +223,10 @@ def generate_random_seed():
 
 def get_history_dropdown_choices(device_id):
     if not device_id:
-        return [("— 暫無歷史任務紀錄 —", "")]
+        return [("— 暫無歷史紀錄 —", "")]
     completed = task_manager.get_completed_tasks_for_device(device_id)
     if not completed:
-        return [("— 暫無歷史任務紀錄 —", "")]
+        return [("— 暫無歷史紀錄 —", "")]
     choices = []
     for t in completed:
         t_str = time.strftime("%m/%d %H:%M", time.localtime(t.created_at))
@@ -183,10 +238,10 @@ def get_history_dropdown_choices(device_id):
 
 def on_select_history_item(selected_task_id, device_id):
     if not selected_task_id:
-        return None, "請選擇上方歷史任務"
+        return None, "請選擇上方任務"
     task = task_manager.get_task(selected_task_id, device_id=device_id)
     if not task or not task.video_path or not os.path.exists(task.video_path):
-        return None, "⚠️ 找不到該影片檔案（可能已被移除或不屬於此裝置）"
+        return None, "⚠️ 找不到該影片檔案"
     
     t_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(task.created_at))
     info_md = f"""
@@ -194,8 +249,8 @@ def on_select_history_item(selected_task_id, device_id):
     * **任務類型**：`{task.task_type}`
     * **建立時間**：{t_str}
     * **生成耗時**：{task.elapsed} 秒
-    * **檔案路徑**：`{os.path.basename(task.video_path)}`
-    * **完整提示詞**：
+    * **檔案名稱**：`{os.path.basename(task.video_path)}`
+    * **提示詞**：
     ```text
     {task.prompt}
     ```
@@ -231,24 +286,26 @@ def handle_i2v_generate(
         device_id = f"dev_{uuid.uuid4().hex[:6]}"
 
     if not first_frame:
-        yield "❌ 請至少上傳「首幀圖片」！", None, current_session_task, device_id
+        yield build_progress_html("❌ 請上傳首幀圖片"), None, current_session_task, device_id
         return
 
     if not prompt or not prompt.strip():
-        yield "❌ 提示詞 (Prompt) 不可為空！", None, current_session_task, device_id
+        yield build_progress_html("❌ 請輸入提示詞"), None, current_session_task, device_id
         return
 
     # Snap to nearest multiple of 32 (Required by MiniMax-H3 VAE 16x downsample + DiT 2x2 patchify)
     w = max(32, int(round(int(custom_w) / 32) * 32))
     h = max(32, int(round(int(custom_h) / 32) * 32))
 
-    yield "📤 正在上傳首幀 (及尾幀) 圖片至 ComfyUI...", None, current_session_task, device_id
+    yield build_progress_html("⚡ 前處理中：正在上傳圖片..."), None, current_session_task, device_id
     try:
         first_frame_fn = upload_media_file(first_frame)
         last_frame_fn = upload_media_file(last_frame) if last_frame else None
     except Exception as e:
-        yield f"❌ 上傳圖片失敗: {str(e)}", None, current_session_task, device_id
+        yield build_progress_html(f"❌ 上傳圖片失敗: 檢查後端是否已啟動({str(e)}"), None, current_session_task, device_id
         return
+
+    yield build_progress_html("⚡ 前處理中：正在編譯工作流..."), None, current_session_task, device_id
 
     prompt_graph = build_i2v_workflow(
         prompt=prompt,
@@ -298,7 +355,7 @@ def handle_i2v_generate(
         t = task_manager.get_task(task.task_id, device_id=device_id)
         if not t:
             break
-        yield t.message, t.video_path, t.task_id, device_id
+        yield build_progress_html(t), t.video_path, t.task_id, device_id
         if t.status in ["completed", "failed"]:
             break
         time.sleep(0.5)
@@ -328,8 +385,10 @@ def handle_t2v_generate(
         device_id = f"dev_{uuid.uuid4().hex[:6]}"
 
     if not prompt or not prompt.strip():
-        yield "❌ 提示詞 (Prompt) 不可為空！", None, current_session_task, device_id
+        yield build_progress_html("❌ 請輸入提示詞"), None, current_session_task, device_id
         return
+
+    yield build_progress_html("⚡ 前處理中：正在準備生成任務..."), None, current_session_task, device_id
 
     # Snap to nearest multiple of 32 (Required by MiniMax-H3 VAE 16x downsample + DiT 2x2 patchify)
     w = max(32, int(round(int(custom_w) / 32) * 32))
@@ -378,7 +437,7 @@ def handle_t2v_generate(
         t = task_manager.get_task(task.task_id, device_id=device_id)
         if not t:
             break
-        yield t.message, t.video_path, t.task_id, device_id
+        yield build_progress_html(t), t.video_path, t.task_id, device_id
         if t.status in ["completed", "failed"]:
             break
         time.sleep(0.5)
@@ -415,14 +474,14 @@ def handle_r2v_generate(
         device_id = f"dev_{uuid.uuid4().hex[:6]}"
 
     if not prompt or not prompt.strip():
-        yield "❌ 提示詞 (Prompt) 不可為空！", None, current_session_task, device_id
+        yield build_progress_html("❌ 請輸入提示詞"), None, current_session_task, device_id
         return
 
     # Snap to nearest multiple of 32 (Required by MiniMax-H3 VAE 16x downsample + DiT 2x2 patchify)
     w = max(32, int(round(int(custom_w) / 32) * 32))
     h = max(32, int(round(int(custom_h) / 32) * 32))
 
-    yield "📤 正在上傳參考多媒體素材至 ComfyUI...", None, current_session_task, device_id
+    yield build_progress_html("⚡ 前處理中：正在上傳參考素材..."), None, current_session_task, device_id
 
     ref_img_files = []
     for img in [ref_img_1, ref_img_2, ref_img_3, ref_img_4]:
@@ -431,7 +490,7 @@ def handle_r2v_generate(
                 fn = upload_media_file(img)
                 ref_img_files.append(fn)
             except Exception as e:
-                yield f"❌ 上傳參考圖失敗: {str(e)}", None, current_session_task, device_id
+                yield build_progress_html(f"❌ 上傳參考圖失敗: {str(e)}"), None, current_session_task, device_id
                 return
 
     ref_video_fn = None
@@ -439,7 +498,7 @@ def handle_r2v_generate(
         try:
             ref_video_fn = upload_media_file(ref_video)
         except Exception as e:
-            yield f"❌ 上傳參考影片失敗: {str(e)}", None, current_session_task, device_id
+            yield build_progress_html(f"❌ 上傳參考影片失敗: {str(e)}"), None, current_session_task, device_id
             return
 
     ref_audio_fn = None
@@ -447,8 +506,10 @@ def handle_r2v_generate(
         try:
             ref_audio_fn = upload_media_file(ref_audio)
         except Exception as e:
-            yield f"❌ 上傳參考音訊失敗: {str(e)}", None, current_session_task, device_id
+            yield build_progress_html(f"❌ 上傳參考音訊失敗: {str(e)}"), None, current_session_task, device_id
             return
+
+    yield build_progress_html("⚡ 前處理中：正在編譯工作流..."), None, current_session_task, device_id
 
     prompt_graph = build_r2v_workflow(
         prompt=prompt,
@@ -504,7 +565,7 @@ def handle_r2v_generate(
         t = task_manager.get_task(task.task_id, device_id=device_id)
         if not t:
             break
-        yield t.message, t.video_path, t.task_id, device_id
+        yield build_progress_html(t), t.video_path, t.task_id, device_id
         if t.status in ["completed", "failed"]:
             break
         time.sleep(0.5)
@@ -547,7 +608,7 @@ def restore_device_state(stored_device_id, stored_task_id):
                 gr.update(value=p.get("fps", 24)),
                 gr.update(value=p.get("sampler", "res_multistep")),
                 gr.update(value=p.get("scheduler", "simple")),
-                gr.update(value=task.message),
+                gr.update(value=build_progress_html(task)),
                 gr.update(value=task.video_path if task.video_path and os.path.exists(task.video_path) else None),
             ]
         elif task.task_type == "T2V":
@@ -564,7 +625,7 @@ def restore_device_state(stored_device_id, stored_task_id):
                 gr.update(value=p.get("fps", 24)),
                 gr.update(value=p.get("sampler", "res_multistep")),
                 gr.update(value=p.get("scheduler", "simple")),
-                gr.update(value=task.message),
+                gr.update(value=build_progress_html(task)),
                 gr.update(value=task.video_path if task.video_path and os.path.exists(task.video_path) else None),
             ]
         elif task.task_type == "R2V":
@@ -588,7 +649,7 @@ def restore_device_state(stored_device_id, stored_task_id):
                 gr.update(value=p.get("fps", 24)),
                 gr.update(value=p.get("sampler", "res_multistep")),
                 gr.update(value=p.get("scheduler", "simple")),
-                gr.update(value=task.message),
+                gr.update(value=build_progress_html(task)),
                 gr.update(value=task.video_path if task.video_path and os.path.exists(task.video_path) else None),
             ]
 
@@ -604,6 +665,19 @@ def restore_device_state(stored_device_id, stored_task_id):
         *t2v_updates,
         *r2v_updates,
     )
+
+
+def switch_manual_device_id(custom_id, current_device_id, session_task_id):
+    """Allows user to manually switch to a remembered device ID without exposing other IDs."""
+    val = (custom_id or "").strip()
+    if not val:
+        return (gr.update(visible=False), *restore_device_state(current_device_id, session_task_id))
+
+    if not val.startswith("dev_"):
+        val = f"dev_{val}"
+
+    restored = restore_device_state(val, None)
+    return (gr.update(visible=False), *restored)
 
 
 # --- UI Definition ---
@@ -622,11 +696,22 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
         secret=DEVICE_STORAGE_SECRET,
     )
 
-    header_html = gr.HTML(build_header_html())
+    with gr.Row(elem_classes=["header-row"]):
+        header_html = gr.HTML(build_header_html(), scale=9)
+        edit_id_btn = gr.Button("✏️ 輸入ID", variant="secondary", scale=1, min_width=85)
+
+    with gr.Row(visible=False) as edit_id_row:
+        manual_id_input = gr.Textbox(
+            label="手動指定裝置 ID (可找回該裝置歷史記錄)",
+            placeholder="請輸入 6 位數 ID (例如 71c8f5) 或完整 ID...",
+            scale=5,
+        )
+        save_id_btn = gr.Button("確認切換", variant="primary", scale=1)
+        cancel_id_btn = gr.Button("取消", variant="secondary", scale=1)
 
     # ComfyUI Backend Control Toolbar (Spec 6)
     with gr.Row():
-        start_backend_btn = gr.Button("⚡ 檢查 ComfyUI 後端狀態中...", variant="secondary", scale=9)
+        start_backend_btn = gr.Button("⚡ 檢查後端模型狀態...", variant="secondary", scale=9)
         stop_backend_btn = gr.Button("🛑", variant="stop", scale=1, min_width=50)
 
     backend_status_msg = gr.Markdown("")
@@ -637,12 +722,12 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
 
     def poll_backend_status():
         if _is_backend_starting:
-            return gr.update(value="🟡 正在啟動 ComfyUI 後端...", variant="secondary")
+            return gr.update(value="🟡 正在啟動後端模型...", variant="secondary")
         ok, _ = check_server(COMFY_SERVER_URL)
         if ok:
-            return gr.update(value="🟢 ComfyUI 後端運作中", variant="primary")
+            return gr.update(value="🟢 後端模型運作中", variant="primary")
         else:
-            return gr.update(value="⚡ 啟動 ComfyUI 後端 (離線中)", variant="secondary")
+            return gr.update(value="⚡ 啟動後端模型", variant="secondary")
 
     auto_timer.tick(poll_backend_status, outputs=[start_backend_btn])
 
@@ -650,11 +735,11 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
         global _is_backend_starting
         ok, _ = check_server(COMFY_SERVER_URL)
         if ok:
-            yield gr.update(value="🟢 ComfyUI 後端運作中", variant="primary"), "**狀態反饋**：🟢 ComfyUI 後端已經在運作中，無須重複啟動！"
+            yield gr.update(value="🟢 後端模型運作中", variant="primary"), "🟢 後端模型已經在運作中，無須重複啟動"
             return
 
         _is_backend_starting = True
-        yield gr.update(value="🟡 正在啟動 ComfyUI 後端...", variant="secondary"), "**狀態反饋**：🟡 正在啟動 ComfyUI 後端，請稍候..."
+        yield gr.update(value="🟡 正在啟動後端模型...", variant="secondary"), "🟡 正在啟動後端模型，請稍候..."
 
         try:
             ok, msg = start_comfyui_backend(COMFY_SERVER_URL)
@@ -662,49 +747,51 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
             _is_backend_starting = False
 
         btn_update = poll_backend_status()
-        yield btn_update, f"**狀態反饋**：{msg}"
+        yield btn_update, f"{msg}"
 
     def on_stop_backend():
         ok, msg = stop_comfyui_backend(COMFY_SERVER_URL)
         btn_update = poll_backend_status()
-        return btn_update, f"**狀態反饋**：{msg}"
+        return btn_update, f"{msg}"
 
     start_backend_btn.click(on_start_backend, outputs=[start_backend_btn, backend_status_msg])
     stop_backend_btn.click(on_stop_backend, outputs=[start_backend_btn, backend_status_msg])
 
     with gr.Tabs() as tabs:
         # ==========================================
-        # TAB 1: 圖+文生影片 (I2V)
+        # TAB 1: 圖生影片 (I2V)
         # ==========================================
-        with gr.Tab("🖼️ 圖+文生影片 (I2V)"):
+        with gr.Tab("🖼️ 圖生影片 (I2V)"):
             with gr.Row():
                 with gr.Column(scale=1):
                     with gr.Row():
-                        i2v_first_frame = gr.Image(type="filepath", label="首幀圖片 (必填 First Frame)", height=240)
-                        i2v_last_frame = gr.Image(type="filepath", label="尾幀圖片 (選填 Last Frame - 首尾過渡)", height=240)
+                        i2v_first_frame = gr.Image(type="filepath", label="首幀圖片", height=240)
+                        i2v_last_frame = gr.Image(type="filepath", label="尾幀圖片 (選填)", height=240)
 
                     i2v_img_badge = gr.Markdown("")
 
                     i2v_prompt = gr.Textbox(
-                        label="提示詞 (Prompt)",
-                        placeholder="詳細描述畫面的動態、角色動作、物理反饋、鏡頭運動，以及音效/語音（支援中英文）...",
+                        label="提示詞",
+                        placeholder="描述畫面的動態、角色動作、鏡頭運動與音效（支援中英文）...",
                         lines=5,
                         value=""
                     )
 
-                    # Row 1: Aspect Ratio, Quality Level (1~5)
+                    # Row 1: Aspect Ratio, Quality Level (1~10)
                     with gr.Row():
                         i2v_aspect_ratio = gr.Dropdown(
                             choices=list(ASPECT_RATIOS.keys()),
                             value="16:9 (橫向風景)",
-                            label="長寬比例 (Aspect Ratio)",
-                            scale=3
+                            label="長寬比",
+                            scale=3,
+                            filterable=False,
                         )
                         i2v_quality_level = gr.Dropdown(
                             choices=QUALITY_CHOICES,
                             value=DEFAULT_QUALITY_LEVEL,
-                            label="畫質等級 (1~5)",
-                            scale=3
+                            label="畫質等級",
+                            scale=3,
+                            filterable=False,
                         )
                         i2v_res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP)", scale=3)
 
@@ -712,22 +799,22 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                     with gr.Row():
                         i2v_duration = gr.Slider(
                             minimum=1.0, maximum=15.0, value=2.0, step=0.5,
-                            label="影片時長 (Duration 秒)", info="自動吸附 17k+5 影格", scale=3
+                            label="影片時長 (秒)", scale=3
                         )
-                        i2v_seed = gr.Number(value=1, precision=0, label="隨機種子 (Seed)", scale=2)
+                        i2v_seed = gr.Number(value=1, precision=0, label="隨機種子", scale=2)
                         i2v_rand_btn = gr.Button("🎲 隨機", scale=1)
 
-                    with gr.Accordion("⚙️ 進階參數 (模型與取樣設定)", open=False):
+                    with gr.Accordion("⚙️ 進階參數", open=False):
                         with gr.Row():
-                            i2v_custom_w = gr.Slider(minimum=256, maximum=1920, value=1344, step=32, label="自訂寬度 (Width)")
-                            i2v_custom_h = gr.Slider(minimum=256, maximum=1920, value=768, step=32, label="自訂高度 (Height)")
+                            i2v_custom_w = gr.Slider(minimum=256, maximum=2560, value=1344, step=32, label="自訂寬度")
+                            i2v_custom_h = gr.Slider(minimum=256, maximum=2560, value=768, step=32, label="自訂高度")
                         with gr.Row():
-                            i2v_steps = gr.Slider(minimum=1, maximum=50, value=20, step=1, label="取樣步數 (Steps)")
-                            i2v_denoise = gr.Slider(minimum=0.1, maximum=1.0, value=1.0, step=0.05, label="去噪強度 (Denoise)")
-                            i2v_fps = gr.Slider(minimum=12, maximum=60, value=24, step=1, label="幀率 (FPS)")
+                            i2v_steps = gr.Slider(minimum=1, maximum=50, value=20, step=1, label="取樣步數")
+                            i2v_denoise = gr.Slider(minimum=0.1, maximum=1.0, value=1.0, step=0.05, label="去噪強度")
+                            i2v_fps = gr.Slider(minimum=12, maximum=60, value=24, step=1, label="影格率 (FPS)")
                         with gr.Row():
-                            i2v_sampler = gr.Dropdown(choices=SAMPLER_CHOICES, value="res_multistep", label="取樣器 (Sampler)")
-                            i2v_scheduler = gr.Dropdown(choices=SCHEDULER_CHOICES, value="simple", label="調度器 (Scheduler)")
+                            i2v_sampler = gr.Dropdown(choices=SAMPLER_CHOICES, value="res_multistep", label="取樣器", filterable=False)
+                            i2v_scheduler = gr.Dropdown(choices=SCHEDULER_CHOICES, value="simple", label="調度器", filterable=False)
                         with gr.Row():
                             i2v_unet = gr.Textbox(value=DEFAULT_UNET, label="Diffusion Model (UNET)")
                             i2v_clip = gr.Textbox(value=DEFAULT_CLIP, label="Text Encoder (CLIP)")
@@ -735,14 +822,12 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                             i2v_v_vae = gr.Textbox(value=DEFAULT_VIDEO_VAE, label="Video VAE")
                             i2v_a_vae = gr.Textbox(value=DEFAULT_AUDIO_VAE, label="Audio VAE")
 
-                    i2v_btn = gr.Button("🚀 開始生成圖生影片 (I2V)", variant="primary", elem_classes=["primary-btn"])
+                    i2v_btn = gr.Button("🚀 開始生成影片", variant="primary", elem_classes=["primary-btn"])
 
                 with gr.Column(scale=1):
-                    with gr.Row():
-                        i2v_status = gr.Markdown("🟢 準備就緒，點擊按鈕即可開始生成。")
-                        i2v_recover_btn = gr.Button("🔄 恢復本機最後進度與輸入", variant="secondary", size="sm")
-
-                    i2v_output_video = gr.Video(label="生成結果影片 (自帶原生立體聲音效)", autoplay=True, interactive=False)
+                    i2v_status = gr.HTML(build_progress_html("🟢 準備就緒"))
+                    i2v_recover_btn = gr.Button("🔄 恢復上次輸入與成果", variant="secondary")
+                    i2v_output_video = gr.Video(label="生成影片", autoplay=True, interactive=False)
 
             # Auto resolution update listeners
             for comp in [i2v_aspect_ratio, i2v_quality_level]:
@@ -766,31 +851,33 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
             )
 
         # ==========================================
-        # TAB 2: 純文生影片 (T2V)
+        # TAB 2: 文生影片 (T2V)
         # ==========================================
-        with gr.Tab("✍️ 純文生影片 (T2V)"):
+        with gr.Tab("✍️ 文生影片 (T2V)"):
             with gr.Row():
                 with gr.Column(scale=1):
                     t2v_prompt = gr.Textbox(
-                        label="提示詞 (Prompt)",
-                        placeholder="請詳細描述想生成的場景、運鏡、角色動態、氛圍與背景音樂/音效（MiniMax-H3 原生支援音視訊聯合生成）...",
+                        label="提示詞",
+                        placeholder="描述想生成的場景、運鏡、角色動態、氛圍與背景音樂/音效...",
                         lines=6,
                         value=""
                     )
 
-                    # Row 1: Aspect Ratio, Quality Level (1~5)
+                    # Row 1: Aspect Ratio, Quality Level (1~10)
                     with gr.Row():
                         t2v_aspect_ratio = gr.Dropdown(
                             choices=list(ASPECT_RATIOS.keys()),
                             value="16:9 (橫向風景)",
-                            label="長寬比例 (Aspect Ratio)",
-                            scale=3
+                            label="長寬比",
+                            scale=3,
+                            filterable=False,
                         )
                         t2v_quality_level = gr.Dropdown(
                             choices=QUALITY_CHOICES,
                             value=DEFAULT_QUALITY_LEVEL,
-                            label="畫質等級 (1~5)",
-                            scale=3
+                            label="畫質等級",
+                            scale=3,
+                            filterable=False,
                         )
                         t2v_res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP)", scale=3)
 
@@ -798,22 +885,22 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                     with gr.Row():
                         t2v_duration = gr.Slider(
                             minimum=1.0, maximum=15.0, value=2.0, step=0.5,
-                            label="影片時長 (Duration 秒)", info="自動吸附 17k+5 影格", scale=3
+                            label="影片時長 (秒)", scale=3
                         )
-                        t2v_seed = gr.Number(value=1, precision=0, label="隨機種子 (Seed)", scale=2)
+                        t2v_seed = gr.Number(value=1, precision=0, label="隨機種子", scale=2)
                         t2v_rand_btn = gr.Button("🎲 隨機", scale=1)
 
-                    with gr.Accordion("⚙️ 進階參數 (模型與取樣設定)", open=False):
+                    with gr.Accordion("⚙️ 進階參數", open=False):
                         with gr.Row():
-                            t2v_custom_w = gr.Slider(minimum=256, maximum=1920, value=1344, step=32, label="自訂寬度 (Width)")
-                            t2v_custom_h = gr.Slider(minimum=256, maximum=1920, value=768, step=32, label="自訂高度 (Height)")
+                            t2v_custom_w = gr.Slider(minimum=256, maximum=2560, value=1344, step=32, label="自訂寬度")
+                            t2v_custom_h = gr.Slider(minimum=256, maximum=2560, value=768, step=32, label="自訂高度")
                         with gr.Row():
-                            t2v_steps = gr.Slider(minimum=1, maximum=50, value=20, step=1, label="取樣步數 (Steps)")
-                            t2v_denoise = gr.Slider(minimum=0.1, maximum=1.0, value=1.0, step=0.05, label="去噪強度 (Denoise)")
-                            t2v_fps = gr.Slider(minimum=12, maximum=60, value=24, step=1, label="幀率 (FPS)")
+                            t2v_steps = gr.Slider(minimum=1, maximum=50, value=20, step=1, label="取樣步數")
+                            t2v_denoise = gr.Slider(minimum=0.1, maximum=1.0, value=1.0, step=0.05, label="去噪強度")
+                            t2v_fps = gr.Slider(minimum=12, maximum=60, value=24, step=1, label="影格率 (FPS)")
                         with gr.Row():
-                            t2v_sampler = gr.Dropdown(choices=SAMPLER_CHOICES, value="res_multistep", label="取樣器 (Sampler)")
-                            t2v_scheduler = gr.Dropdown(choices=SCHEDULER_CHOICES, value="simple", label="調度器 (Scheduler)")
+                            t2v_sampler = gr.Dropdown(choices=SAMPLER_CHOICES, value="res_multistep", label="取樣器", filterable=False)
+                            t2v_scheduler = gr.Dropdown(choices=SCHEDULER_CHOICES, value="simple", label="調度器", filterable=False)
                         with gr.Row():
                             t2v_unet = gr.Textbox(value=DEFAULT_UNET, label="Diffusion Model (UNET)")
                             t2v_clip = gr.Textbox(value=DEFAULT_CLIP, label="Text Encoder (CLIP)")
@@ -821,14 +908,12 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                             t2v_v_vae = gr.Textbox(value=DEFAULT_VIDEO_VAE, label="Video VAE")
                             t2v_a_vae = gr.Textbox(value=DEFAULT_AUDIO_VAE, label="Audio VAE")
 
-                    t2v_btn = gr.Button("🚀 開始生成文生影片 (T2V)", variant="primary", elem_classes=["primary-btn"])
+                    t2v_btn = gr.Button("🚀 開始生成影片", variant="primary", elem_classes=["primary-btn"])
 
                 with gr.Column(scale=1):
-                    with gr.Row():
-                        t2v_status = gr.Markdown("🟢 準備就緒，點擊按鈕即可開始生成。")
-                        t2v_recover_btn = gr.Button("🔄 恢復本機最後進度與輸入", variant="secondary", size="sm")
-
-                    t2v_output_video = gr.Video(label="生成結果影片 (自帶原生立體聲音效)", autoplay=True, interactive=False)
+                    t2v_status = gr.HTML(build_progress_html("🟢 準備就緒"))
+                    t2v_recover_btn = gr.Button("🔄 恢復上次輸入與成果", variant="secondary")
+                    t2v_output_video = gr.Video(label="生成影片", autoplay=True, interactive=False)
 
             # Auto resolution update listeners
             for comp in [t2v_aspect_ratio, t2v_quality_level]:
@@ -849,23 +934,23 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
             )
 
         # ==========================================
-        # TAB 3: 影片生影片 / 參考生成 (R2V)
+        # TAB 3: 參考生影片 (R2V)
         # ==========================================
-        with gr.Tab("🎬 影片生影片 (R2V / V2V)"):
+        with gr.Tab("🎬 參考生影片 (R2V)"):
             with gr.Row():
                 with gr.Column(scale=1):
                     r2v_prompt = gr.Textbox(
-                        label="提示詞 (Prompt - 可包含引用標籤)",
-                        placeholder="請使用 <Picture 1>, <Picture 2>, <Video 1>, <Audio 1> 精確關聯參考素材。例如：'根據 <Picture 1> 的角色特徵，參考 <Video 1> 的動作姿勢，生成動作影片...'",
+                        label="提示詞",
+                        placeholder="可使用 <Picture 1>, <Picture 2>, <Video 1>, <Audio 1> 關聯參考素材。例如：'根據 <Picture 1> 的角色特徵，參考 <Video 1> 的動作姿勢，生成動作影片...'",
                         lines=5,
                         value=""
                     )
 
                     with gr.Row():
                         r2v_video = gr.Video(label="參考影片 (<Video 1>)", height=220)
-                        r2v_audio = gr.Audio(label="獨立參考音訊 (<Audio 1> 選填)", type="filepath")
+                        r2v_audio = gr.Audio(label="參考音訊 (<Audio 1> 選填)", type="filepath")
 
-                    with gr.Accordion("🖼️ 參考圖片 (可選 1 ~ 4 張 Picture 標籤)", open=False):
+                    with gr.Accordion("🖼️ 參考圖片 (最多 4 張)", open=False):
                         with gr.Row():
                             r2v_img1 = gr.Image(type="filepath", label="參考圖 1 (<Picture 1>)", height=180)
                             r2v_img2 = gr.Image(type="filepath", label="參考圖 2 (<Picture 2>)", height=180)
@@ -880,22 +965,24 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                             choices=["match", "max"],
                             value="match",
                             label="參考圖尺寸模式",
-                            info="match: 快速匹配生成畫幅 | max: 2048px 高保真 (較慢)"
+                            info="match: 匹配輸出畫幅 | max: 高解析度"
                         )
 
-                    # Row 1: Aspect Ratio, Quality Level (1~5)
+                    # Row 1: Aspect Ratio, Quality Level (1~10)
                     with gr.Row():
                         r2v_aspect_ratio = gr.Dropdown(
                             choices=list(ASPECT_RATIOS.keys()),
                             value="16:9 (橫向風景)",
-                            label="長寬比例 (Aspect Ratio)",
-                            scale=3
+                            label="長寬比",
+                            scale=3,
+                            filterable=False,
                         )
                         r2v_quality_level = gr.Dropdown(
                             choices=QUALITY_CHOICES,
                             value=DEFAULT_QUALITY_LEVEL,
-                            label="畫質等級 (1~5)",
-                            scale=3
+                            label="畫質等級",
+                            scale=3,
+                            filterable=False,
                         )
                         r2v_res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP)", scale=3)
 
@@ -903,22 +990,22 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                     with gr.Row():
                         r2v_duration = gr.Slider(
                             minimum=1.0, maximum=18.0, value=3.0, step=0.5,
-                            label="影片時長 (Duration 秒)", info="自動吸附 17k+5 影格", scale=3
+                            label="影片時長 (秒)", scale=3
                         )
-                        r2v_seed = gr.Number(value=1, precision=0, label="隨機種子 (Seed)", scale=2)
+                        r2v_seed = gr.Number(value=1, precision=0, label="隨機種子", scale=2)
                         r2v_rand_btn = gr.Button("🎲 隨機", scale=1)
 
-                    with gr.Accordion("⚙️ 進階參數 (模型與取樣設定)", open=False):
+                    with gr.Accordion("⚙️ 進階參數", open=False):
                         with gr.Row():
-                            r2v_custom_w = gr.Slider(minimum=256, maximum=1920, value=1344, step=32, label="自訂寬度 (Width)")
-                            r2v_custom_h = gr.Slider(minimum=256, maximum=1920, value=768, step=32, label="自訂高度 (Height)")
+                            r2v_custom_w = gr.Slider(minimum=256, maximum=2560, value=1344, step=32, label="自訂寬度")
+                            r2v_custom_h = gr.Slider(minimum=256, maximum=2560, value=768, step=32, label="自訂高度")
                         with gr.Row():
-                            r2v_steps = gr.Slider(minimum=1, maximum=50, value=20, step=1, label="取樣步數 (Steps)")
-                            r2v_denoise = gr.Slider(minimum=0.1, maximum=1.0, value=1.0, step=0.05, label="去噪強度 (Denoise)")
-                            r2v_fps = gr.Slider(minimum=12, maximum=60, value=24, step=1, label="幀率 (FPS)")
+                            r2v_steps = gr.Slider(minimum=1, maximum=50, value=20, step=1, label="取樣步數")
+                            r2v_denoise = gr.Slider(minimum=0.1, maximum=1.0, value=1.0, step=0.05, label="去噪強度")
+                            r2v_fps = gr.Slider(minimum=12, maximum=60, value=24, step=1, label="影格率 (FPS)")
                         with gr.Row():
-                            r2v_sampler = gr.Dropdown(choices=SAMPLER_CHOICES, value="res_multistep", label="取樣器 (Sampler)")
-                            r2v_scheduler = gr.Dropdown(choices=SCHEDULER_CHOICES, value="simple", label="調度器 (Scheduler)")
+                            r2v_sampler = gr.Dropdown(choices=SAMPLER_CHOICES, value="res_multistep", label="取樣器", filterable=False)
+                            r2v_scheduler = gr.Dropdown(choices=SCHEDULER_CHOICES, value="simple", label="調度器", filterable=False)
                         with gr.Row():
                             r2v_unet = gr.Textbox(value=DEFAULT_UNET, label="Diffusion Model (UNET)")
                             r2v_clip = gr.Textbox(value=DEFAULT_CLIP, label="Text Encoder (CLIP)")
@@ -926,14 +1013,12 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                             r2v_v_vae = gr.Textbox(value=DEFAULT_VIDEO_VAE, label="Video VAE")
                             r2v_a_vae = gr.Textbox(value=DEFAULT_AUDIO_VAE, label="Audio VAE")
 
-                    r2v_btn = gr.Button("🚀 開始生成影片生影片 (R2V)", variant="primary", elem_classes=["primary-btn"])
+                    r2v_btn = gr.Button("🚀 開始生成影片", variant="primary", elem_classes=["primary-btn"])
 
                 with gr.Column(scale=1):
-                    with gr.Row():
-                        r2v_status = gr.Markdown("🟢 準備就緒，點擊按鈕即可開始生成。")
-                        r2v_recover_btn = gr.Button("🔄 恢復本機最後進度與輸入", variant="secondary", size="sm")
-
-                    r2v_output_video = gr.Video(label="生成結果影片 (自帶原生立體聲音效)", autoplay=True, interactive=False)
+                    r2v_status = gr.HTML(build_progress_html("🟢 準備就緒"))
+                    r2v_recover_btn = gr.Button("🔄 恢復上次輸入與成果", variant="secondary")
+                    r2v_output_video = gr.Video(label="生成影片", autoplay=True, interactive=False)
 
             # Auto resolution update listeners
             for comp in [r2v_aspect_ratio, r2v_quality_level]:
@@ -958,17 +1043,17 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
             )
 
         # ==========================================
-        # TAB 4: 📁 歷史成果庫 (History Gallery) - Strictly per-device
+        # TAB 4: 📁 歷史成果庫
         # ==========================================
-        with gr.Tab("📁 歷史成果庫 (History Gallery)"):
-            gr.Markdown("### 🗄️ 本裝置過去生成的影片記錄（僅顯示本裝置生成成果，嚴格隔離其他裝置）")
+        with gr.Tab("📁 歷史成果庫"):
+            gr.Markdown("### 🗄️ 歷史生成記錄")
             with gr.Row():
-                refresh_history_btn = gr.Button("🔄 刷新本裝置歷史列表", variant="secondary", scale=1)
+                refresh_history_btn = gr.Button("🔄 重新整理", variant="secondary", scale=1)
                 # Spec 5: Strictly a dropdown without combobox / textbox degradation
                 history_dropdown = gr.Dropdown(
-                    choices=[("— 暫無歷史任務紀錄 —", "")],
+                    choices=[("— 暫無歷史紀錄 —", "")],
                     value="",
-                    label="選擇歷史任務 (依時間倒序排列)",
+                    label="選擇歷史任務",
                     allow_custom_value=False,
                     filterable=False,
                     interactive=True,
@@ -976,9 +1061,9 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                 )
             with gr.Row():
                 with gr.Column(scale=1):
-                    gallery_video = gr.Video(label="歷史影片播放 (支援直接下載)", autoplay=False)
+                    gallery_video = gr.Video(label="歷史影片", autoplay=False)
                 with gr.Column(scale=1):
-                    gallery_info = gr.Markdown("點選上方清單即可查看該次生成的詳細資訊與提示詞。")
+                    gallery_info = gr.Markdown("選擇上方任務查看詳細資訊與播放。")
 
             refresh_history_btn.click(
                 fn=lambda dev_id: gr.update(choices=get_history_dropdown_choices(dev_id)),
@@ -1031,17 +1116,129 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
     t2v_recover_btn.click(restore_device_state, inputs=[device_id_state, session_task_state], outputs=all_restored_outputs)
     r2v_recover_btn.click(restore_device_state, inputs=[device_id_state, session_task_state], outputs=all_restored_outputs)
 
-if __name__ == "__main__":
+    # Manual ID Switch Events (Spec 8)
+    edit_id_btn.click(lambda: gr.update(visible=True), outputs=[edit_id_row])
+    cancel_id_btn.click(lambda: gr.update(visible=False), outputs=[edit_id_row])
+    save_id_btn.click(
+        switch_manual_device_id,
+        inputs=[manual_id_input, device_id_state, session_task_state],
+        outputs=[edit_id_row, *all_restored_outputs],
+    )
+    manual_id_input.submit(
+        switch_manual_device_id,
+        inputs=[manual_id_input, device_id_state, session_task_state],
+        outputs=[edit_id_row, *all_restored_outputs],
+    )
+
+def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
+    """Checks whether a local TCP port is already bound."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex((host, port)) == 0
+
+
+def find_pids_on_port(port: int) -> list:
+    """Finds PIDs listening on the specified port on Windows."""
+    import subprocess
+    try:
+        output = subprocess.check_output(f"netstat -ano | findstr :{port}", shell=True, text=True)
+        pids = []
+        for line in output.strip().splitlines():
+            line_str = line.strip()
+            if f":{port}" in line_str and "LISTENING" in line_str:
+                parts = line_str.split()
+                if len(parts) >= 5 and parts[-1] not in pids:
+                    pids.append(parts[-1])
+        return pids
+    except Exception:
+        return []
+
+
+def get_process_name_by_pid(pid: str) -> str:
+    """Gets the executable process name for a PID on Windows."""
+    import subprocess
+    try:
+        out = subprocess.check_output(f'tasklist /FI "PID eq {pid}" /FO CSV /NH', shell=True, text=True)
+        if out and "," in out:
+            return out.split(",")[0].strip('"\r\n ')
+    except Exception:
+        pass
+    return "Unknown"
+
+
+def print_port_conflict_help(port: int):
+    """
+    Displays a clear, formatted error message and troubleshooting guide for administrators
+    when the target port (7860) is occupied.
+    """
+    pids = find_pids_on_port(port)
+    pid_details = []
+    kill_cmds = []
+    for pid in pids:
+        proc_name = get_process_name_by_pid(pid)
+        pid_details.append(f"PID: {pid} ({proc_name})")
+        kill_cmds.append(f"taskkill /PID {pid} /F")
+
+    pid_str = ", ".join(pid_details) if pid_details else "無法直接取得（可能為其他使用者或系統服務）"
+
+    print("\n" + "=" * 70)
+    print(f"❌ [錯誤] 前端伺服器啟動失敗：連接埠 {port} 已被佔用！")
+    print("=" * 70)
+    print("【排查診斷資訊】：")
+    print(f" • 目標連接埠：{port}")
+    print(f" • 佔用進程資訊：{pid_str}")
+    print()
+    print("【伺服器管理員排查與解決步驟】：")
+    print(f" 1. 使用者預設透過 http://127.0.0.1:{port} 訪問，系統維持固定通訊埠而不隨意跳號。")
+    print(" 2. 請檢查是否已有先前開啟但未完全關閉的 WebUI 終端機或背景 Python 進程。")
+    if kill_cmds:
+        print(" 3. 若欲強制結束佔用此連接埠的進程，可開啟命令提示字元（CMD）或 PowerShell 執行：")
+        for k_cmd in kill_cmds:
+            print(f"    👉 {k_cmd}")
+    else:
+        print(f" 3. 可於終端機執行下列指令查詢佔用此連接埠的 PID：")
+        print(f"    👉 netstat -ano | findstr :{port}")
+        print(f"    再執行 👉 taskkill /PID <查詢到的PID> /F 強制釋放。")
+    print(f" 4. 釋放連接埠後，請重新執行 run.bat 啟動伺服器。")
+    print("=" * 70 + "\n")
+
+
+def launch_webui(port: int = WEBUI_PORT, raise_on_error: bool = False, **launch_kwargs):
+    """
+    Launches the Gradio WebUI strictly on the specified port (default 7860).
+    If the port is occupied, displays a clear error and troubleshooting guide for the admin.
+    """
+    import sys
+    if is_port_in_use(port):
+        print_port_conflict_help(port)
+        if raise_on_error:
+            raise OSError(f"Port {port} is already in use by another process.")
+        sys.exit(1)
+
     print("=" * 60)
-    print("MiniMax-H3 Gradio WebUI Starting...")
-    print(f"Local Access: http://127.0.0.1:{WEBUI_PORT}")
-    print(f"Mobile LAN Access: http://{lan_ip}:{WEBUI_PORT}")
+    print(f"MiniMax-H3 Gradio WebUI Starting (Port: {port})...")
+    print(f"Local Access: http://127.0.0.1:{port}")
+    print(f"Mobile LAN Access: http://{lan_ip}:{port}")
     print(f"ComfyUI Backend: {COMFY_SERVER_URL}")
     print("=" * 60)
-    demo.launch(
-        server_name=WEBUI_HOST,
-        server_port=WEBUI_PORT,
-        share=False,
-        theme=gr.themes.Default(primary_hue="blue"),
-        css=CUSTOM_CSS,
-    )
+
+    kwargs = {
+        "server_name": WEBUI_HOST,
+        "server_port": port,
+        "share": False,
+        "theme": gr.themes.Default(primary_hue="blue"),
+        "css": CUSTOM_CSS,
+    }
+    kwargs.update(launch_kwargs)
+    try:
+        return demo.launch(**kwargs)
+    except OSError as e:
+        if "Cannot find empty port" in str(e) or "10048" in str(e):
+            print_port_conflict_help(port)
+            if raise_on_error:
+                raise
+            sys.exit(1)
+        raise
+
+if __name__ == "__main__":
+    launch_webui()

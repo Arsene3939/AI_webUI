@@ -35,7 +35,7 @@ def start_comfyui_backend(server_url: str = COMFY_SERVER_URL) -> Tuple[bool, str
     global _COMFY_PROCESS
     is_ok, _ = check_server(server_url)
     if is_ok:
-        return True, "🟢 ComfyUI 後端已經在運作中，無須重複啟動！"
+        return True, "🟢 後端已經在運作中，無須重複啟動"
 
     main_py = os.path.join(COMFY_ROOT, "main.py")
     if not os.path.exists(main_py):
@@ -63,9 +63,9 @@ def start_comfyui_backend(server_url: str = COMFY_SERVER_URL) -> Tuple[bool, str
         time.sleep(1)
         ok, _ = check_server(server_url)
         if ok:
-            return True, "🟢 ComfyUI 後端已成功啟動並就緒！"
+            return True, "🟢 後端已成功啟動並就緒！"
 
-    return True, "⏳ 已送出啟動指令，ComfyUI 正在背景載入中，約需 5~10 秒..."
+    return True, "⏳ 已送出啟動指令，正在背景載入中，約需 5~10 秒..."
 
 
 def stop_comfyui_backend(server_url: str = COMFY_SERVER_URL) -> Tuple[bool, str]:
@@ -73,7 +73,7 @@ def stop_comfyui_backend(server_url: str = COMFY_SERVER_URL) -> Tuple[bool, str]
     global _COMFY_PROCESS
     is_ok, _ = check_server(server_url)
     if not is_ok and _COMFY_PROCESS is None:
-        return False, "🔴 ComfyUI 本來就未在運作中。"
+        return False, "🔴 後端本來就未在運作中。"
 
     # 1. Terminate tracked subprocess if available
     if _COMFY_PROCESS is not None:
@@ -103,9 +103,9 @@ def stop_comfyui_backend(server_url: str = COMFY_SERVER_URL) -> Tuple[bool, str]
     time.sleep(1)
     is_ok, _ = check_server(server_url)
     if not is_ok:
-        return True, "🛑 ComfyUI 後端已成功關閉。"
+        return True, "🛑 後端已成功關閉。"
     else:
-        return False, "⚠️ 嘗試關閉 ComfyUI 後端失敗，請手動檢查終端機。"
+        return False, "⚠️ 嘗試關閉後端失敗，請手動檢查終端機。"
 
 
 def upload_media_file(file_path: str, server_url: str = COMFY_SERVER_URL) -> str:
@@ -223,7 +223,7 @@ def run_and_monitor(
         return
 
     client_id = str(uuid.uuid4())
-    yield 0.05, "📤 正在向 ComfyUI 提交工作流佇列...", None
+    yield 0.05, "📤 正在提交任務...", None
 
     try:
         prompt_id = queue_prompt(prompt_graph, client_id, server_url)
@@ -231,7 +231,7 @@ def run_and_monitor(
         yield 0.0, f"❌ 提交失敗: {str(e)}", None
         return
 
-    yield 0.1, f"⏳ 工作流已加入佇列 (Prompt ID: {prompt_id[:8]}...)", None
+    yield 0.1, f"⏳ 已加入排隊隊列 (ID: {prompt_id[:8]}...)", None
 
     # Track progress via polling & history as fallback
     start_time = time.time()
@@ -256,7 +256,7 @@ def run_and_monitor(
                             if filename and (filename.endswith(".mp4") or filename.endswith(".webm") or filename.endswith(".mkv")):
                                 subfolder = item.get("subfolder", "")
                                 folder_type = item.get("type", "output")
-                                yield 0.95, "📥 影片生成完畢，正在下載至 WebUI...", None
+                                yield 0.95, "📥 正在儲存影片...", None
                                 video_path = download_output_file(filename, subfolder, folder_type, server_url)
                                 total_elapsed = round(time.time() - start_time, 1)
                                 yield 1.0, f"✅ 影片生成成功！耗時 {total_elapsed} 秒", video_path
@@ -284,9 +284,9 @@ def run_and_monitor(
                     time_str = f"{secs}秒"
 
                 if prompt_id in running:
-                    yield 0.3 + min(0.65, elapsed / 1800.0), f"⚡ MiniMax-H3 正在進行音視訊聯合去噪擴散運算... (已耗時 {time_str})", None
+                    yield 0.3 + min(0.65, elapsed / 1800.0), f"⚡ 影片生成中... (耗時 {time_str})", None
                 elif prompt_id in pending:
-                    yield 0.15, f"⏳ 排隊等待執行中... (已等待 {time_str})", None
+                    yield 0.15, f"⏳ 排隊中... (已等待 {time_str})", None
                 else:
                     time.sleep(1)
         except Exception:

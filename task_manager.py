@@ -37,14 +37,14 @@ class Task:
         self.prompt_id: Optional[str] = None
         self.status = "queued"  # 'queued', 'running', 'completed', 'failed'
         self.progress = 0.05
-        self.message = "⏳ 任務已排隊..."
+        self.message = "⚡ 前處理中：任務已建立..."
         self.video_path: Optional[str] = None
         self.created_at = time.time()
         self.completed_at: Optional[float] = None
         self.elapsed: float = 0.0
         self.step: int = 0
         self.total_steps: int = 0
-        self.stage: str = ""
+        self.stage: str = "preprocessing"
         self.current_node: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -88,6 +88,19 @@ class Task:
         t.total_steps = data.get("total_steps", 0)
         t.stage = data.get("stage", "")
         return t
+
+
+def _is_same_device(dev_a: Optional[str], dev_b: Optional[str]) -> bool:
+    """Helper to check if two device IDs match, allowing for dev_ prefix variance."""
+    if not dev_a or not dev_b:
+        return False
+    if dev_a == dev_b:
+        return True
+    if dev_a.startswith("dev_") and dev_a[4:] == dev_b:
+        return True
+    if dev_b.startswith("dev_") and dev_b[4:] == dev_a:
+        return True
+    return False
 
 
 class TaskManager:
@@ -146,6 +159,8 @@ class TaskManager:
                 saved_params[k] = self._archive_file(v, task_id, k)
 
         task = Task(task_id, task_type, prompt, saved_params, device_id=device_id)
+        task.stage = "preprocessing"
+        task.message = "⚡ 前處理中：正在準備提交任務..."
         with self._lock:
             self._tasks[task_id] = task
         self._save_history()
@@ -182,14 +197,14 @@ class TaskManager:
                                 task.status = "completed"
                                 task.progress = 1.0
                                 task.completed_at = time.time()
-                                task.message = f"✅ 影片生成完成！總耗時 {task.elapsed} 秒"
+                                task.message = f"✅ 影片生成完成！耗時 {task.elapsed} 秒"
                                 self._save_history()
                                 return task
 
                 status_info = history.get("status", {})
                 if status_info.get("status_str") == "error":
                     task.status = "failed"
-                    task.message = "❌ ComfyUI 後端執行失敗，請檢查終端機。"
+                    task.message = "❌ 生成失敗，請查看後端錯誤記錄。"
                     self._save_history()
                     return task
         except Exception:
@@ -204,7 +219,7 @@ class TaskManager:
             task = self._tasks.get(task_id)
             if not task:
                 return None
-            if device_id and task.device_id != device_id:
+            if device_id and not _is_same_device(task.device_id, device_id):
                 # Strictly isolate from other devices!
                 return None
 
@@ -218,7 +233,7 @@ class TaskManager:
         if not device_id:
             return None
         with self._lock:
-            matching = [t for t in self._tasks.values() if t.device_id == device_id]
+            matching = [t for t in self._tasks.values() if _is_same_device(t.device_id, device_id)]
             if not matching:
                 return None
             task = max(matching, key=lambda x: x.created_at)
@@ -233,7 +248,7 @@ class TaskManager:
         if not device_id:
             return []
         with self._lock:
-            candidates = [t for t in self._tasks.values() if t.device_id == device_id]
+            candidates = [t for t in self._tasks.values() if _is_same_device(t.device_id, device_id)]
 
         for t in candidates:
             if t.prompt_id and (not t.video_path or not os.path.exists(t.video_path)):
@@ -242,7 +257,7 @@ class TaskManager:
         with self._lock:
             tasks = [
                 t for t in self._tasks.values()
-                if t.device_id == device_id and t.status == "completed" and t.video_path and os.path.exists(t.video_path)
+                if _is_same_device(t.device_id, device_id) and t.status == "completed" and t.video_path and os.path.exists(t.video_path)
             ]
             return sorted(tasks, key=lambda x: x.created_at, reverse=True)
 
@@ -277,14 +292,25 @@ class TaskManager:
                                     task.step = v
                                     task.total_steps = m
                                     task.progress = min(0.95, max(0.15, 0.15 + (v / m) * 0.77))
+                                    if v < m:
+                                        task.stage = "sampling"
+                                    else:
+                                        task.stage = "postprocessing"
                             elif etype == "executing":
                                 node = data.get("node")
                                 p_id = data.get("prompt_id")
                                 if p_id == prompt_id:
                                     if node is None:
-                                        task.stage = "執行完成"
+                                        task.stage = "completed"
                                     else:
                                         task.current_node = str(node)
+                                        node_str = str(node).lower()
+                                        if any(k in node_str for k in ["vae_decode", "create_video", "save_video"]):
+                                            task.stage = "postprocessing"
+                                        elif any(k in node_str for k in ["sampler", "sampling"]):
+                                            task.stage = "sampling"
+                                        elif task.stage not in ("sampling", "postprocessing"):
+                                            task.stage = "preprocessing"
             except Exception:
                 pass
 
@@ -299,17 +325,19 @@ class TaskManager:
 
     def _monitor_worker(self, task: Task, prompt_graph: Dict[str, Any], server_url: str):
         task.status = "running"
-        task.message = "📤 正在向 ComfyUI 提交工作流..."
+        task.stage = "preprocessing"
+        task.message = "⚡ 前處理中：正在提交任務至後端..."
         task.progress = 0.08
 
         client_id = str(uuid.uuid4())
         try:
             prompt_id = queue_prompt(prompt_graph, client_id, server_url)
             task.prompt_id = prompt_id
-            task.message = f"⏳ 已加入 ComfyUI 排程隊列 (ID: {prompt_id[:8]})..."
+            task.message = f"⏳ 排隊中 (ID: {prompt_id[:8]})..."
             task.progress = 0.15
         except Exception as e:
             task.status = "failed"
+            task.stage = "failed"
             task.message = f"❌ 提交失敗: {str(e)}"
             self._save_history()
             return
@@ -354,14 +382,16 @@ class TaskManager:
                                 if fn and (fn.endswith(".mp4") or fn.endswith(".webm") or fn.endswith(".mkv")):
                                     subfolder = it.get("subfolder", "")
                                     folder_type = it.get("type", "output")
-                                    task.message = "📥 影片生成完畢，正在儲存至伺服器..."
+                                    task.stage = "postprocessing"
+                                    task.message = f"⚡ 後處理中：正在儲存並下載影片... (耗時 {time_str})"
                                     task.progress = 0.95
                                     local_path = download_output_file(fn, subfolder, folder_type, server_url)
                                     task.video_path = local_path
                                     task.status = "completed"
+                                    task.stage = "completed"
                                     task.progress = 1.0
                                     task.completed_at = time.time()
-                                    task.message = f"✅ 影片生成完成！總耗時 {time_str}"
+                                    task.message = f"✅ 影片生成完成！耗時 {time_str}"
                                     stop_ws.set()
                                     self._save_history()
                                     return
@@ -369,7 +399,8 @@ class TaskManager:
                     status_info = history.get("status", {})
                     if status_info.get("status_str") == "error":
                         task.status = "failed"
-                        task.message = "❌ ComfyUI 後端運算失敗，請檢查終端機詳細錯誤。"
+                        task.stage = "failed"
+                        task.message = "❌ 生成失敗，請查看後端錯誤記錄。"
                         stop_ws.set()
                         self._save_history()
                         return
@@ -384,15 +415,22 @@ class TaskManager:
                     running = [item[1] for item in q_data.get("queue_running", [])]
                     pending = [item[1] for item in q_data.get("queue_pending", [])]
 
-                    if task.total_steps > 0:
-                        task.message = f"⚡ MiniMax-H3 擴散取樣中: {task.step}/{task.total_steps} 步 (已耗時 {time_str} - 手機可鎖屏待機)"
+                    if task.total_steps > 0 and task.step >= task.total_steps:
+                        task.stage = "postprocessing"
+                        task.message = f"⚡ 後處理中 (解碼與合成影片)... (耗時 {time_str})"
+                    elif task.stage == "postprocessing":
+                        task.message = f"⚡ 後處理中 (解碼與合成影片)... (耗時 {time_str})"
+                    elif task.total_steps > 0 and task.step > 0:
+                        task.stage = "sampling"
+                        task.message = f"⚡ 影片生成中: {task.step}/{task.total_steps} 步 (耗時 {time_str})"
                     elif task.prompt_id in running:
-                        node_str = f"正在執行節點: {task.current_node}" if getattr(task, "current_node", "") else "音視訊運算中"
+                        task.stage = "preprocessing"
                         task.progress = min(0.95, 0.25 + (elapsed / 1800.0) * 0.70)
-                        task.message = f"⚡ MiniMax-H3 {node_str}... (已耗時 {time_str} - 手機可鎖屏待機)"
+                        task.message = f"⚡ 前處理中 (載入模型與特徵處理)... (耗時 {time_str})"
                     elif task.prompt_id in pending:
+                        task.stage = "pending"
                         task.progress = 0.18
-                        task.message = f"⏳ 排隊等待執行中... (已等待 {time_str})"
+                        task.message = f"⏳ 排隊中... (已等待 {time_str})"
             except Exception:
                 pass
 

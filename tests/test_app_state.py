@@ -264,3 +264,141 @@ class TestStateRestoration:
         assert device_id_state.secret == "minimax_h3_device_secret_2026"
         assert session_task_state.secret == "minimax_h3_device_secret_2026"
 
+    def test_build_progress_html(self):
+        """Tests yellow progress bar HTML builder and step percentage calculation."""
+        from app import build_progress_html
+        from task_manager import Task
+
+        # 1. Plain string message (initial state)
+        html_init = build_progress_html("🟢 準備就緒")
+        assert "0%" in html_init
+        assert "background-color: #ffffff" in html_init
+        assert "#eab308" in html_init
+
+        # 2. In-progress task with steps (13/20 = 65%)
+        t_running = Task("task_prog_1", "I2V", "prompt", {}, device_id="dev_prog")
+        t_running.step = 13
+        t_running.total_steps = 20
+        t_running.status = "running"
+        t_running.message = "⚡ 影片生成中: 13/20 步 (耗時 25秒)"
+
+        html_running = build_progress_html(t_running)
+        assert "65%" in html_running
+        assert "width: 65%" in html_running
+        assert "background-color: #ffffff" in html_running
+        assert "#eab308" in html_running
+
+        # 3. Completed task (100%)
+        t_completed = Task("task_prog_2", "I2V", "prompt", {}, device_id="dev_prog")
+        t_completed.status = "completed"
+        t_completed.message = "✅ 影片生成完成！耗時 1分10秒"
+
+        html_completed = build_progress_html(t_completed)
+        assert "100%" in html_completed
+        assert "width: 100%" in html_completed
+
+        # 4. Preprocessing task (0% with pre-processing status message displayed above bar)
+        t_pre = Task("task_prog_3", "I2V", "prompt", {}, device_id="dev_prog")
+        t_pre.status = "running"
+        t_pre.stage = "preprocessing"
+        t_pre.step = 0
+        t_pre.total_steps = 0
+        t_pre.message = "⚡ 前處理中 (載入模型與特徵處理)... (耗時 12秒)"
+
+        html_pre = build_progress_html(t_pre)
+        assert "0%" in html_pre
+        assert "width: 0%" in html_pre
+        assert "⚡ 前處理中 (載入模型與特徵處理)... (耗時 12秒)" in html_pre
+
+        # 5. Postprocessing task (100% with post-processing status message displayed above bar)
+        t_post = Task("task_prog_4", "I2V", "prompt", {}, device_id="dev_prog")
+        t_post.status = "running"
+        t_post.stage = "postprocessing"
+        t_post.step = 20
+        t_post.total_steps = 20
+        t_post.message = "⚡ 後處理中 (解碼與合成影片)... (耗時 1分15秒)"
+
+        html_post = build_progress_html(t_post)
+        assert "100%" in html_post
+        assert "width: 100%" in html_post
+        assert "⚡ 後處理中 (解碼與合成影片)... (耗時 1分15秒)" in html_post
+
+        # 6. Verify 2 lines of vertical space allocated (Spec 10)
+        assert "min-height: 2.7em" in html_post
+        assert "-webkit-line-clamp: 2" in html_post
+
+    def test_dropdowns_disable_filtering_and_custom_values(self):
+        """Ensures all dropdowns in app.py have filterable=False to prevent mobile keyboard popup (Spec 9)."""
+        import app
+        dropdowns = [
+            app.i2v_aspect_ratio,
+            app.i2v_quality_level,
+            app.i2v_sampler,
+            app.i2v_scheduler,
+            app.t2v_aspect_ratio,
+            app.t2v_quality_level,
+            app.t2v_sampler,
+            app.t2v_scheduler,
+            app.r2v_aspect_ratio,
+            app.r2v_quality_level,
+            app.r2v_sampler,
+            app.r2v_scheduler,
+            app.history_dropdown,
+        ]
+        for dd in dropdowns:
+            assert dd.filterable is False, f"Dropdown {dd.label} must have filterable=False"
+
+    def test_switch_manual_device_id(self):
+        """Tests manually entering a remembered Device ID (Spec 8)."""
+        from app import switch_manual_device_id, all_restored_outputs
+
+        # 1. Switch to short 6-digit ID
+        res = switch_manual_device_id("71c8f5", None, None)
+        assert len(res) == len(all_restored_outputs) + 1  # 1 (edit_row) + 55 outputs
+        edit_row_update = res[0]
+        assigned_id = res[1]
+        header_update = res[3]
+
+        assert edit_row_update.get("visible") is False
+        assert "value" not in edit_row_update  # Ensure gr.Row does not receive invalid value prop
+        assert assigned_id == "dev_71c8f5"
+        assert "ID:71c8f5" in header_update
+
+        # 2. Empty input cancels without resetting current device
+        res_empty = switch_manual_device_id("", "dev_current", None)
+        assert res_empty[0].get("visible") is False
+        assert "value" not in res_empty[0]
+        assert res_empty[1] == "dev_current"
+
+    def test_launch_webui_port_occupied_diagnosis(self, capsys):
+        """Tests that launch_webui displays diagnostic guidance and refuses to randomly switch ports (Spec 12)."""
+        import socket
+        import pytest
+        from app import launch_webui, is_port_in_use
+
+        test_port = 7885
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", test_port))
+        sock.listen(1)
+
+        try:
+            assert is_port_in_use(test_port) is True
+
+            # Expect OSError when raise_on_error=True
+            with pytest.raises(OSError) as exc_info:
+                launch_webui(port=test_port, raise_on_error=True)
+
+            assert f"Port {test_port} is already in use" in str(exc_info.value)
+
+            # Check printed troubleshooting guide
+            captured = capsys.readouterr()
+            out = captured.out
+            assert f"連接埠 {test_port} 已被佔用" in out
+            assert "排查診斷資訊" in out
+            assert "伺服器管理員排查與解決步驟" in out
+            assert "taskkill /PID" in out
+            assert f"netstat -ano | findstr :{test_port}" in out
+        finally:
+            sock.close()
+

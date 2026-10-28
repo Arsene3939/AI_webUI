@@ -19,6 +19,8 @@ import socket
 import argparse
 import tempfile
 import threading
+import requests
+import gradio_client
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -385,6 +387,39 @@ class E2ETestRunner:
             self.log_step("Step 8: Multi-Device Strict Segregation", True, "Zero cross-device leakage verified", time.time() - t0)
         except Exception as e:
             self.log_step("Step 8: Multi-Device Strict Segregation", False, str(e), time.time() - t0)
+            return False
+
+        # Step 9: Real WebUI Server Launch, Health Probe & API Integration
+        t0 = time.time()
+        test_port = 7875
+        try:
+            # 1. Launch WebUI on test port
+            app.launch_webui(port=test_port, raise_on_error=True, prevent_thread_lock=True, quiet=True)
+
+            # 2. Probe HTTP root (/) and /config endpoints
+            resp_root = requests.get(f"http://127.0.0.1:{test_port}/", timeout=5)
+            assert resp_root.status_code == 200, f"WebUI root returned HTTP {resp_root.status_code}"
+
+            resp_config = requests.get(f"http://127.0.0.1:{test_port}/config", timeout=5)
+            assert resp_config.status_code == 200, f"WebUI /config returned HTTP {resp_config.status_code}"
+            config_data = resp_config.json()
+            assert "components" in config_data, "WebUI /config response missing components"
+
+            # 3. Connect Gradio Client and test API interaction
+            client = gradio_client.Client(f"http://127.0.0.1:{test_port}")
+            # Verify switch_manual_device_id works over HTTP without serialization/keyword errors
+            res_switch = client.predict("a1b2c3", "dev_orig", None, api_name="/switch_manual_device_id")
+            assert len(res_switch) == len(app.all_restored_outputs), f"Unexpected switch output count: {len(res_switch)}"
+
+            # 4. Clean shutdown
+            app.demo.close()
+            self.log_step("Step 9: Live WebUI Server Launch & API Probe", True, f"Server bound to port {test_port}, HTTP 200 OK & Client API verified", time.time() - t0)
+        except Exception as e:
+            try:
+                app.demo.close()
+            except Exception:
+                pass
+            self.log_step("Step 9: Live WebUI Server Launch & API Probe", False, str(e), time.time() - t0)
             return False
 
         # Print Final Summary
