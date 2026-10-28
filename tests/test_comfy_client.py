@@ -8,6 +8,7 @@ import pytest
 from comfy_client import (
     check_server,
     start_comfyui_backend,
+    stop_comfyui_backend,
     upload_media_file,
     queue_prompt,
     download_output_file,
@@ -135,3 +136,38 @@ class TestComfyClientBackendStartup:
         ok, msg = start_comfyui_backend("http://127.0.0.1:8188")
         assert ok is False
         assert "找不到 ComfyUI 核心主程式" in msg
+
+
+class TestComfyClientBackendStop:
+    @patch("comfy_client.time.sleep")
+    @patch("comfy_client.check_server")
+    @patch("comfy_client.subprocess.check_output")
+    def test_stop_comfyui_backend_success(self, mock_subprocess, mock_check, mock_sleep):
+        """Tests stopping ComfyUI backend terminates process and port listener."""
+        mock_check.side_effect = [(True, "Online"), (False, "Offline")]
+        mock_subprocess.return_value = b"1234\n"
+
+        ok, msg = stop_comfyui_backend("http://127.0.0.1:8188")
+        assert ok is True
+        assert "成功關閉" in msg
+
+    @patch("comfy_client.check_server")
+    def test_stop_comfyui_backend_already_offline(self, mock_check):
+        """When ComfyUI is not running, stop returns immediately."""
+        mock_check.return_value = (False, "Offline")
+
+        ok, msg = stop_comfyui_backend("http://127.0.0.1:8188")
+        assert ok is False
+        assert "本來就未在運作" in msg
+
+    @patch("comfy_client.time.sleep")
+    @patch("comfy_client.check_server")
+    @patch("comfy_client.subprocess.check_output")
+    def test_stop_comfyui_backend_failure(self, mock_subprocess, mock_check, mock_sleep):
+        """Tests handling when process refuses to terminate."""
+        mock_check.side_effect = [(True, "Online"), (True, "Still Online")]
+        mock_subprocess.return_value = b""
+
+        ok, msg = stop_comfyui_backend("http://127.0.0.1:8188")
+        assert ok is False
+        assert "失敗" in msg

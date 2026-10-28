@@ -377,7 +377,10 @@ class E2ETestRunner:
 
             # Device Beta history isolation
             beta_choices = app.get_history_dropdown_choices(device_beta)
-            assert len(beta_choices) == 0, "Device Beta received history items from other devices!"
+            # Default placeholder when no history exists: [("— 暫無歷史任務紀錄 —", "")]
+            # Ensure no valid task IDs are returned for Device Beta
+            assert not any(task_id for _, task_id in beta_choices if task_id), "Device Beta received history items from other devices!"
+            assert not any(t.task_id in str(beta_choices) for t in [task_i2v, task_t2v, task_r2v]), "Device Alpha tasks leaked into Device Beta history choices!"
 
             self.log_step("Step 8: Multi-Device Strict Segregation", True, "Zero cross-device leakage verified", time.time() - t0)
         except Exception as e:

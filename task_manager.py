@@ -8,6 +8,8 @@ import time
 import uuid
 import shutil
 import threading
+import asyncio
+import websockets
 from typing import Dict, Any, Optional, List
 import requests
 from config import COMFY_SERVER_URL, OUTPUT_DIR
@@ -40,6 +42,10 @@ class Task:
         self.created_at = time.time()
         self.completed_at: Optional[float] = None
         self.elapsed: float = 0.0
+        self.step: int = 0
+        self.total_steps: int = 0
+        self.stage: str = ""
+        self.current_node: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -56,6 +62,9 @@ class Task:
             "created_at": self.created_at,
             "completed_at": self.completed_at,
             "elapsed": self.elapsed,
+            "step": self.step,
+            "total_steps": self.total_steps,
+            "stage": self.stage,
         }
 
     @classmethod
@@ -75,6 +84,9 @@ class Task:
         t.created_at = data.get("created_at", time.time())
         t.completed_at = data.get("completed_at")
         t.elapsed = data.get("elapsed", 0.0)
+        t.step = data.get("step", 0)
+        t.total_steps = data.get("total_steps", 0)
+        t.stage = data.get("stage", "")
         return t
 
 
@@ -243,6 +255,48 @@ class TaskManager:
         )
         thread.start()
 
+    def _ws_listener(self, ws_url: str, client_id: str, prompt_id: str, task: Task, stop_event: threading.Event):
+        """Listens to ComfyUI websocket for real-time progress steps and executing node names."""
+        async def listen():
+            full_ws = f"{ws_url}/ws?clientId={client_id}"
+            try:
+                async with websockets.connect(full_ws, ping_timeout=20, close_timeout=5) as ws:
+                    while not stop_event.is_set():
+                        try:
+                            msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                        except asyncio.TimeoutError:
+                            continue
+                        if isinstance(msg, str):
+                            event = json.loads(msg)
+                            etype = event.get("type")
+                            data = event.get("data", {})
+                            if etype == "progress":
+                                v = data.get("value", 0)
+                                m = data.get("max", 1)
+                                if m > 0:
+                                    task.step = v
+                                    task.total_steps = m
+                                    task.progress = min(0.95, max(0.15, 0.15 + (v / m) * 0.77))
+                            elif etype == "executing":
+                                node = data.get("node")
+                                p_id = data.get("prompt_id")
+                                if p_id == prompt_id:
+                                    if node is None:
+                                        task.stage = "執行完成"
+                                    else:
+                                        task.current_node = str(node)
+            except Exception:
+                pass
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(listen())
+        except Exception:
+            pass
+        finally:
+            loop.close()
+
     def _monitor_worker(self, task: Task, prompt_graph: Dict[str, Any], server_url: str):
         task.status = "running"
         task.message = "📤 正在向 ComfyUI 提交工作流..."
@@ -259,6 +313,16 @@ class TaskManager:
             task.message = f"❌ 提交失敗: {str(e)}"
             self._save_history()
             return
+
+        # Start WebSocket progress listener for real-time steps
+        stop_ws = threading.Event()
+        ws_url = server_url.replace("http://", "ws://").replace("https://", "wss://")
+        ws_thread = threading.Thread(
+            target=self._ws_listener,
+            args=(ws_url, client_id, task.prompt_id, task, stop_ws),
+            daemon=True,
+        )
+        ws_thread.start()
 
         start_time = time.time()
         while True:
@@ -298,6 +362,7 @@ class TaskManager:
                                     task.progress = 1.0
                                     task.completed_at = time.time()
                                     task.message = f"✅ 影片生成完成！總耗時 {time_str}"
+                                    stop_ws.set()
                                     self._save_history()
                                     return
 
@@ -305,6 +370,7 @@ class TaskManager:
                     if status_info.get("status_str") == "error":
                         task.status = "failed"
                         task.message = "❌ ComfyUI 後端運算失敗，請檢查終端機詳細錯誤。"
+                        stop_ws.set()
                         self._save_history()
                         return
             except Exception:
@@ -318,17 +384,19 @@ class TaskManager:
                     running = [item[1] for item in q_data.get("queue_running", [])]
                     pending = [item[1] for item in q_data.get("queue_pending", [])]
 
-                    if task.prompt_id in running:
-                        # Smooth progress for long running tasks (never stops)
+                    if task.total_steps > 0:
+                        task.message = f"⚡ MiniMax-H3 擴散取樣中: {task.step}/{task.total_steps} 步 (已耗時 {time_str} - 手機可鎖屏待機)"
+                    elif task.prompt_id in running:
+                        node_str = f"正在執行節點: {task.current_node}" if getattr(task, "current_node", "") else "音視訊運算中"
                         task.progress = min(0.95, 0.25 + (elapsed / 1800.0) * 0.70)
-                        task.message = f"⚡ MiniMax-H3 音視訊運算中... (已耗時 {time_str} - 手機可鎖屏待機)"
+                        task.message = f"⚡ MiniMax-H3 {node_str}... (已耗時 {time_str} - 手機可鎖屏待機)"
                     elif task.prompt_id in pending:
                         task.progress = 0.18
                         task.message = f"⏳ 排隊等待執行中... (已等待 {time_str})"
             except Exception:
                 pass
 
-            time.sleep(2)
+            time.sleep(0.5)
 
 
 # Global singleton instance

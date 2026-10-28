@@ -6,6 +6,7 @@ import gradio as gr
 import pytest
 from app import (
     demo,
+    build_header_html,
     restore_device_state,
     get_history_dropdown_choices,
     on_select_history_item,
@@ -20,6 +21,27 @@ class TestAppInitialization:
         assert isinstance(demo, gr.Blocks)
         # Verify app title
         assert "MiniMax-H3" in demo.title
+
+    def test_build_header_html_concise_id(self):
+        """Tests that device ID in header displays concise 'ID:XXX' without timestamp."""
+        # When device_id is None, no ID badge is shown
+        html_none = build_header_html(None)
+        assert "ID:" not in html_none
+        assert "裝置識別" not in html_none
+
+        # Legacy device_id with timestamp: dev_1793124384_71c8f5 -> should show ID:71c8f5, NO 1793124384
+        html_legacy = build_header_html("dev_1793124384_71c8f5")
+        assert "ID:71c8f5" in html_legacy
+        assert "1793124384" not in html_legacy
+        assert "裝置識別" not in html_legacy
+
+        # Concise device_id: dev_a1b2c3 -> should show ID:a1b2c3
+        html_new = build_header_html("dev_a1b2c3")
+        assert "ID:a1b2c3" in html_new
+
+        # E2E format: e2e_alpha_c7dd3e -> should show ID:c7dd3e
+        html_e2e = build_header_html("e2e_alpha_c7dd3e")
+        assert "ID:c7dd3e" in html_e2e
 
 
 class TestStateRestoration:
@@ -66,11 +88,15 @@ class TestStateRestoration:
         assert returned_task_id == task.task_id
 
         # The I2V updates start after (device_id, task_id, header, history_dropdown) -> index 4
+        # I2V (16 components):
+        # 4: first_frame, 5: last_frame, 6: prompt, 7: ar, 8: quality_level, 9: w, 10: h,
+        # 11: duration, 12: seed, 13: steps, 14: denoise, 15: fps, 16: sampler, 17: scheduler,
+        # 18: status, 19: output_video
         i2v_first_frame = ret[4]
         i2v_last_frame = ret[5]
         i2v_prompt = ret[6]
-        i2v_seed = ret[11]
-        i2v_video = ret[18]
+        i2v_seed = ret[12]
+        i2v_video = ret[19]
 
         def extract_val(u):
             return u.get("value") if isinstance(u, dict) else getattr(u, "value", None)
@@ -87,7 +113,8 @@ class TestStateRestoration:
 
         params = {
             "prompt": "Deep underwater coral reef with luminescent fish",
-            "res_preset": "16:9 橫向風景 (1344 x 768)",
+            "aspect_ratio": "16:9 (橫向風景)",
+            "quality_level": "3 (1.0 MP - 標準推薦)",
             "custom_w": 1344,
             "custom_h": 768,
             "duration": 3.0,
@@ -103,8 +130,11 @@ class TestStateRestoration:
         def extract_val(u):
             return u.get("value") if isinstance(u, dict) else getattr(u, "value", None)
 
-        # T2V prompt is at index 4 + 15 = 19
-        assert extract_val(ret[19]) == "Deep underwater coral reef with luminescent fish"
+        # T2V components start at index 4 + 16 = 20
+        # 20: prompt, 21: ar, 22: quality_level, 23: w, 24: h, 25: duration, 26: seed ... 33: video
+        assert extract_val(ret[20]) == "Deep underwater coral reef with luminescent fish"
+        assert extract_val(ret[26]) == 888
+        assert extract_val(ret[33]) == str(dummy_video)
 
     def test_restore_state_r2v_task(self, tmp_path):
         """Tests that R2V task inputs and video are restored for the correct device."""
@@ -128,8 +158,12 @@ class TestStateRestoration:
         def extract_val(u):
             return u.get("value") if isinstance(u, dict) else getattr(u, "value", None)
 
-        # R2V prompt is at index 4 + 15 + 13 = 32
-        assert extract_val(ret[32]) == "Stylized animation of an ancient temple"
+        # R2V components start at index 4 + 16 + 14 = 34
+        # 34: prompt, 35: ref_video, 36: ref_audio, 37..40: img1..4, 41: size,
+        # 42: ar, 43: quality_level, 44: w, 45: h, 46: duration, 47: seed ... 54: video
+        assert extract_val(ret[34]) == "Stylized animation of an ancient temple"
+        assert extract_val(ret[47]) == 999
+        assert extract_val(ret[54]) == str(dummy_video)
 
     def test_restore_state_strict_device_isolation(self, tmp_path):
         """
@@ -219,4 +253,14 @@ class TestStateRestoration:
         vid_path_blocked, info_md_blocked = on_select_history_item(t1.task_id, device_id=dev_2)
         assert vid_path_blocked is None
         assert "找不到該影片檔案" in info_md_blocked
+
+    def test_browser_state_persistent_secret(self):
+        """
+        Tests that BrowserState uses a persistent secret key across restarts,
+        preventing device_id from regenerating upon app updates/restarts.
+        """
+        from app import device_id_state, session_task_state, DEVICE_STORAGE_SECRET
+        assert DEVICE_STORAGE_SECRET == "minimax_h3_device_secret_2026"
+        assert device_id_state.secret == "minimax_h3_device_secret_2026"
+        assert session_task_state.secret == "minimax_h3_device_secret_2026"
 

@@ -7,6 +7,14 @@ from config import (
     align_frame_count,
     duration_to_frames,
     get_lan_ip,
+    calculate_dimensions,
+    find_nearest_aspect_ratio,
+    quality_level_to_mp,
+    QUALITY_CHOICES,
+    QUALITY_LEVEL_TO_MP,
+    DEFAULT_QUALITY_LEVEL,
+    ASPECT_RATIOS,
+    MEGAPIXEL_CHOICES,
     RESOLUTION_PRESETS,
     SAMPLER_CHOICES,
     SCHEDULER_CHOICES,
@@ -90,3 +98,67 @@ class TestConfigPresets:
         # Verify valid IPv4 regex
         ipv4_regex = r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$"
         assert re.match(ipv4_regex, ip) is not None
+
+
+class TestResolutionAndAspectRatio:
+    def test_aspect_ratios_and_megapixels_definitions(self):
+        """Ensures aspect ratios and megapixels choices are valid."""
+        assert "16:9 (橫向風景)" in ASPECT_RATIOS
+        assert "9:16 (直向手機)" in ASPECT_RATIOS
+        assert "1:1 (正方形)" in ASPECT_RATIOS
+        assert 1.0 in MEGAPIXEL_CHOICES
+        assert len(QUALITY_CHOICES) == 5
+        assert len(QUALITY_LEVEL_TO_MP) == 5
+
+    def test_quality_level_to_mp(self):
+        """Tests converting quality levels 1~5 to corresponding megapixels float."""
+        assert quality_level_to_mp(1) == 0.5
+        assert quality_level_to_mp(2) == 0.75
+        assert quality_level_to_mp(3) == 1.0
+        assert quality_level_to_mp(4) == 1.25
+        assert quality_level_to_mp(5) == 1.5
+        # String representations
+        assert quality_level_to_mp("1 (0.5 MP - 極速)") == 0.5
+        assert quality_level_to_mp("3 (1.0 MP - 標準推薦)") == 1.0
+        assert quality_level_to_mp("5 (1.5 MP - 超高畫質)") == 1.5
+        assert quality_level_to_mp("1.0 MP") == 1.0
+
+    def test_calculate_dimensions_standard_ratios(self):
+        """Tests standard 1.0 MP resolution calculations snapped to multiple 32."""
+        # 16:9 at Level 3 (1.0 MP) -> 1344 x 736 (multiples of 32)
+        w, h = calculate_dimensions("16:9 (橫向風景)", megapixels=3)
+        assert (w, h) == (1344, 736)
+        assert w % 32 == 0 and h % 32 == 0
+
+        # 9:16 at Level 3 (1.0 MP) -> 736 x 1344 (multiples of 32)
+        w, h = calculate_dimensions("9:16 (直向手機)", megapixels="3 (1.0 MP - 標準推薦)")
+        assert (w, h) == (736, 1344)
+        assert w % 32 == 0 and h % 32 == 0
+
+        # 1:1 at Level 3 (1.0 MP) -> 992 x 992 (multiples of 32)
+        w, h = calculate_dimensions("1:1 (正方形)", megapixels=1.0)
+        assert (w, h) == (992, 992)
+        assert w % 32 == 0 and h % 32 == 0
+
+    def test_calculate_dimensions_multiples_invariant(self):
+        """Dimensions must always strictly be divisible by the multiple requested."""
+        for ar in ASPECT_RATIOS.keys():
+            for mp in MEGAPIXEL_CHOICES:
+                for mult in [16, 32, 64]:
+                    w, h = calculate_dimensions(ar, megapixels=mp, multiple=mult)
+                    assert w % mult == 0, f"Width {w} not divisible by {mult}"
+                    assert h % mult == 0, f"Height {h} not divisible by {mult}"
+                    assert w > 0 and h > 0
+
+    def test_find_nearest_aspect_ratio(self):
+        """Tests matching arbitrary input image dimensions to closest aspect ratio preset."""
+        assert find_nearest_aspect_ratio(1920, 1080) == "16:9 (橫向風景)"
+        assert find_nearest_aspect_ratio(3840, 2160) == "16:9 (橫向風景)"
+        assert find_nearest_aspect_ratio(1080, 1920) == "9:16 (直向手機)"
+        assert find_nearest_aspect_ratio(1000, 1000) == "1:1 (正方形)"
+        assert find_nearest_aspect_ratio(1024, 768) == "4:3 (標準比例)"
+        assert find_nearest_aspect_ratio(768, 1024) == "3:4 (直向比例)"
+        assert find_nearest_aspect_ratio(2560, 1080) == "21:9 (超寬電影)"
+        # Edge cases
+        assert find_nearest_aspect_ratio(1920, 0) == "16:9 (橫向風景)"
+        assert find_nearest_aspect_ratio(0, 1080) == "9:16 (直向手機)"

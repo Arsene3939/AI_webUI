@@ -16,6 +16,8 @@ from config import COMFY_SERVER_URL, COMFY_WS_URL, OUTPUT_DIR
 COMFY_ROOT = r"F:\program_file\Comfy-Desktop\ComfyUI-Installs\ComfyUI\ComfyUI"
 COMFY_PYTHON = r"F:\program_file\Comfy-Desktop\ComfyUI-Installs\ComfyUI\ComfyUI\.venv\Scripts\python.exe"
 
+_COMFY_PROCESS: Optional[subprocess.Popen] = None
+
 
 def check_server(server_url: str = COMFY_SERVER_URL) -> Tuple[bool, str]:
     """Check if the ComfyUI server is reachable."""
@@ -30,6 +32,7 @@ def check_server(server_url: str = COMFY_SERVER_URL) -> Tuple[bool, str]:
 
 def start_comfyui_backend(server_url: str = COMFY_SERVER_URL) -> Tuple[bool, str]:
     """Starts the ComfyUI backend server in an independent process if not running."""
+    global _COMFY_PROCESS
     is_ok, _ = check_server(server_url)
     if is_ok:
         return True, "🟢 ComfyUI 後端已經在運作中，無須重複啟動！"
@@ -51,7 +54,7 @@ def start_comfyui_backend(server_url: str = COMFY_SERVER_URL) -> Tuple[bool, str
 
     try:
         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
-        subprocess.Popen(cmd, cwd=COMFY_ROOT, creationflags=flags)
+        _COMFY_PROCESS = subprocess.Popen(cmd, cwd=COMFY_ROOT, creationflags=flags)
     except Exception as e:
         return False, f"❌ 啟動進程失敗: {str(e)}"
 
@@ -62,7 +65,47 @@ def start_comfyui_backend(server_url: str = COMFY_SERVER_URL) -> Tuple[bool, str
         if ok:
             return True, "🟢 ComfyUI 後端已成功啟動並就緒！"
 
-    return True, "⏳ 已送出啟動指令，ComfyUI 正在背景載入中，請稍候 5~10 秒後點擊「刷新狀態」。"
+    return True, "⏳ 已送出啟動指令，ComfyUI 正在背景載入中，約需 5~10 秒..."
+
+
+def stop_comfyui_backend(server_url: str = COMFY_SERVER_URL) -> Tuple[bool, str]:
+    """Stops the ComfyUI backend process."""
+    global _COMFY_PROCESS
+    is_ok, _ = check_server(server_url)
+    if not is_ok and _COMFY_PROCESS is None:
+        return False, "🔴 ComfyUI 本來就未在運作中。"
+
+    # 1. Terminate tracked subprocess if available
+    if _COMFY_PROCESS is not None:
+        try:
+            _COMFY_PROCESS.terminate()
+            _COMFY_PROCESS.kill()
+        except Exception:
+            pass
+        _COMFY_PROCESS = None
+
+    # 2. Terminate any process bound to the server port (default 8188)
+    try:
+        port = "8188"
+        if ":" in server_url:
+            port = server_url.split(":")[-1].replace("/", "")
+
+        # Look up owning PID via PowerShell on Windows
+        cmd = f'powershell -Command "(Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue).OwningProcess"'
+        out = subprocess.check_output(cmd, shell=True).decode().strip()
+        for line in out.splitlines():
+            pid = line.strip()
+            if pid and pid.isdigit() and int(pid) > 0:
+                subprocess.run(f"taskkill /F /PID {pid} /T", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+    time.sleep(1)
+    is_ok, _ = check_server(server_url)
+    if not is_ok:
+        return True, "🛑 ComfyUI 後端已成功關閉。"
+    else:
+        return False, "⚠️ 嘗試關閉 ComfyUI 後端失敗，請手動檢查終端機。"
 
 
 def upload_media_file(file_path: str, server_url: str = COMFY_SERVER_URL) -> str:
