@@ -479,7 +479,7 @@ def restore_device_state(stored_device_id, stored_task_id):
     # Defaults (Leave untouched if no task)
     i2v_updates = [gr.update()] * 15
     t2v_updates = [gr.update()] * 13
-    r2v_updates = [gr.update()] * 19
+    r2v_updates = [gr.update()] * 20
     history_choices = get_history_dropdown_choices(stored_device_id)
 
     if task and task.params:

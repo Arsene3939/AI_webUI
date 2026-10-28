@@ -230,19 +230,23 @@ def run_and_monitor(
                 pending = [item[1] for item in q_data.get("queue_pending", [])]
 
                 elapsed = int(time.time() - start_time)
-                if prompt_id in running:
-                    yield 0.3 + min(0.6, elapsed / 180.0), f"⚡ MiniMax-H3 正在進行音視訊聯合去噪擴散運算... (已耗時 {elapsed}s)", None
-                elif prompt_id in pending:
-                    yield 0.15, f"⏳ 排隊等待執行中... (已等待 {elapsed}s)", None
+                hrs = int(elapsed // 3600)
+                mins = int((elapsed % 3600) // 60)
+                secs = int(elapsed % 60)
+                if hrs > 0:
+                    time_str = f"{hrs}小時{mins}分{secs}秒"
+                elif mins > 0:
+                    time_str = f"{mins}分{secs}秒"
                 else:
-                    # Not in running and not in pending, check if finished or errored
+                    time_str = f"{secs}秒"
+
+                if prompt_id in running:
+                    yield 0.3 + min(0.65, elapsed / 1800.0), f"⚡ MiniMax-H3 正在進行音視訊聯合去噪擴散運算... (已耗時 {time_str})", None
+                elif prompt_id in pending:
+                    yield 0.15, f"⏳ 排隊等待執行中... (已等待 {time_str})", None
+                else:
                     time.sleep(1)
         except Exception:
             pass
 
         time.sleep(2)
-
-        # Timeout safeguard after 15 minutes
-        if time.time() - start_time > 900:
-            yield 0.0, "⚠️ 執行超時 (超過 15 分鐘)，請檢查 ComfyUI 後端主機終端機狀態。", None
-            return

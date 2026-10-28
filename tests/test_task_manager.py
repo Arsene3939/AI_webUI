@@ -207,3 +207,40 @@ class TestTaskManagerBackgroundWorker:
 
         assert task.status == "failed"
         assert "❌ 提交失敗" in task.message
+
+    @patch("task_manager.download_output_file")
+    @patch("task_manager.requests.get")
+    def test_sync_task_with_server_recovery(self, mock_get, mock_download, tmp_path):
+        """Ensures task sync automatically fetches completed video from ComfyUI server."""
+        dummy_out = tmp_path / "recovered_video.mp4"
+        dummy_out.write_bytes(b"recovered")
+        mock_download.return_value = str(dummy_out)
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "recovered-prompt-999": {
+                "outputs": {
+                    "save_video": {
+                        "videos": [{"filename": "recovered.mp4", "subfolder": "video", "type": "output"}]
+                    }
+                }
+            }
+        }
+        mock_get.return_value = mock_resp
+
+        tm = TaskManager()
+        # Create a task that was previously marked failed or interrupted
+        task = tm.create_task("I2V", "A long running task", {}, device_id="dev_recovery")
+        task.prompt_id = "recovered-prompt-999"
+        task.status = "failed"
+        task.video_path = None
+
+        # Calling get_latest_task_for_device should trigger sync_task_with_server
+        synced_task = tm.get_latest_task_for_device("dev_recovery")
+
+        assert synced_task is not None
+        assert synced_task.status == "completed"
+        assert synced_task.progress == 1.0
+        assert synced_task.video_path == str(dummy_out)
+

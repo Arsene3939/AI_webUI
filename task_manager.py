@@ -139,6 +139,52 @@ class TaskManager:
         self._save_history()
         return task
 
+    def sync_task_with_server(self, task: Optional[Task], server_url: str = COMFY_SERVER_URL) -> Optional[Task]:
+        """
+        Synchronizes a task's state with ComfyUI.
+        If the task finished in the background or during standby/restart,
+        automatically downloads the completed video and updates task status.
+        """
+        if not task or not task.prompt_id:
+            return task
+
+        # Already completed and file exists locally
+        if task.status == "completed" and task.video_path and os.path.exists(task.video_path):
+            return task
+
+        try:
+            h_resp = requests.get(f"{server_url}/history/{task.prompt_id}", timeout=5)
+            if h_resp.status_code == 200:
+                history = h_resp.json().get(task.prompt_id, {})
+                outputs = history.get("outputs", {})
+                if outputs:
+                    for nid, nout in outputs.items():
+                        items = nout.get("videos") or nout.get("gifs") or nout.get("images") or []
+                        for it in items:
+                            fn = it.get("filename")
+                            if fn and (fn.endswith(".mp4") or fn.endswith(".webm") or fn.endswith(".mkv")):
+                                subfolder = it.get("subfolder", "")
+                                folder_type = it.get("type", "output")
+                                local_path = download_output_file(fn, subfolder, folder_type, server_url)
+                                task.video_path = local_path
+                                task.status = "completed"
+                                task.progress = 1.0
+                                task.completed_at = time.time()
+                                task.message = f"✅ 影片生成完成！總耗時 {task.elapsed} 秒"
+                                self._save_history()
+                                return task
+
+                status_info = history.get("status", {})
+                if status_info.get("status_str") == "error":
+                    task.status = "failed"
+                    task.message = "❌ ComfyUI 後端執行失敗，請檢查終端機。"
+                    self._save_history()
+                    return task
+        except Exception:
+            pass
+
+        return task
+
     def get_task(self, task_id: Optional[str], device_id: Optional[str] = None) -> Optional[Task]:
         if not task_id:
             return None
@@ -149,20 +195,38 @@ class TaskManager:
             if device_id and task.device_id != device_id:
                 # Strictly isolate from other devices!
                 return None
-            return task
+
+        # Synchronize with ComfyUI if task is missing video
+        if task and task.prompt_id and (not task.video_path or not os.path.exists(task.video_path)):
+            self.sync_task_with_server(task)
+
+        return task
 
     def get_latest_task_for_device(self, device_id: Optional[str]) -> Optional[Task]:
         if not device_id:
             return None
         with self._lock:
             matching = [t for t in self._tasks.values() if t.device_id == device_id]
-            if matching:
-                return max(matching, key=lambda x: x.created_at)
-            return None
+            if not matching:
+                return None
+            task = max(matching, key=lambda x: x.created_at)
+
+        # Synchronize with ComfyUI if task is missing video
+        if task and task.prompt_id and (not task.video_path or not os.path.exists(task.video_path)):
+            self.sync_task_with_server(task)
+
+        return task
 
     def get_completed_tasks_for_device(self, device_id: Optional[str]) -> List[Task]:
         if not device_id:
             return []
+        with self._lock:
+            candidates = [t for t in self._tasks.values() if t.device_id == device_id]
+
+        for t in candidates:
+            if t.prompt_id and (not t.video_path or not os.path.exists(t.video_path)):
+                self.sync_task_with_server(t)
+
         with self._lock:
             tasks = [
                 t for t in self._tasks.values()
@@ -201,7 +265,18 @@ class TaskManager:
             elapsed = round(time.time() - start_time, 1)
             task.elapsed = elapsed
 
-            # 1. Check if finished in history
+            # Format human-readable elapsed time (seconds, minutes, or hours)
+            hrs = int(elapsed // 3600)
+            mins = int((elapsed % 3600) // 60)
+            secs = int(elapsed % 60)
+            if hrs > 0:
+                time_str = f"{hrs}小時{mins}分{secs}秒"
+            elif mins > 0:
+                time_str = f"{mins}分{secs}秒"
+            else:
+                time_str = f"{secs}秒"
+
+            # 1. Check if finished or failed in ComfyUI history
             try:
                 h_resp = requests.get(f"{server_url}/history/{task.prompt_id}", timeout=5)
                 if h_resp.status_code == 200:
@@ -222,9 +297,16 @@ class TaskManager:
                                     task.status = "completed"
                                     task.progress = 1.0
                                     task.completed_at = time.time()
-                                    task.message = f"✅ 影片生成完成！總耗時 {elapsed} 秒"
+                                    task.message = f"✅ 影片生成完成！總耗時 {time_str}"
                                     self._save_history()
                                     return
+
+                    status_info = history.get("status", {})
+                    if status_info.get("status_str") == "error":
+                        task.status = "failed"
+                        task.message = "❌ ComfyUI 後端運算失敗，請檢查終端機詳細錯誤。"
+                        self._save_history()
+                        return
             except Exception:
                 pass
 
@@ -237,20 +319,14 @@ class TaskManager:
                     pending = [item[1] for item in q_data.get("queue_pending", [])]
 
                     if task.prompt_id in running:
-                        task.progress = min(0.92, 0.25 + (elapsed / 180.0) * 0.65)
-                        task.message = f"⚡ MiniMax-H3 音視訊運算中... (已耗時 {int(elapsed)}s - 手機可鎖屏待機)"
+                        # Smooth progress for long running tasks (never stops)
+                        task.progress = min(0.95, 0.25 + (elapsed / 1800.0) * 0.70)
+                        task.message = f"⚡ MiniMax-H3 音視訊運算中... (已耗時 {time_str} - 手機可鎖屏待機)"
                     elif task.prompt_id in pending:
                         task.progress = 0.18
-                        task.message = f"⏳ 排隊等待執行中... (已等待 {int(elapsed)}s)"
+                        task.message = f"⏳ 排隊等待執行中... (已等待 {time_str})"
             except Exception:
                 pass
-
-            # 3. Timeout safeguard (15 minutes)
-            if elapsed > 900:
-                task.status = "failed"
-                task.message = "⚠️ 任務超時 (超過 15 分鐘)，請檢查後端終端機。"
-                self._save_history()
-                return
 
             time.sleep(2)
 

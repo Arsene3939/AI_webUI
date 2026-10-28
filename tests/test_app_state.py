@@ -9,6 +9,7 @@ from app import (
     restore_device_state,
     get_history_dropdown_choices,
     on_select_history_item,
+    all_restored_outputs,
 )
 from task_manager import task_manager
 
@@ -25,7 +26,7 @@ class TestStateRestoration:
     def test_restore_state_new_device(self):
         """When a user connects for the first time without a device_id."""
         ret = restore_device_state(None, None)
-        assert len(ret) >= 4  # (device_id, active_task_id, header, history, *updates...)
+        assert len(ret) == len(all_restored_outputs), f"Return length {len(ret)} must match outputs {len(all_restored_outputs)}"
         assigned_device_id = ret[0]
         assert assigned_device_id.startswith("dev_")
 
@@ -57,6 +58,7 @@ class TestStateRestoration:
 
         # Call restore_device_state for this device
         ret = restore_device_state(dev_id, task.task_id)
+        assert len(ret) == len(all_restored_outputs), f"Return length {len(ret)} must match outputs {len(all_restored_outputs)}"
 
         returned_dev_id = ret[0]
         returned_task_id = ret[1]
@@ -76,6 +78,58 @@ class TestStateRestoration:
         assert extract_val(i2v_prompt) == "Cyberpunk night market with neon lights"
         assert extract_val(i2v_seed) == 777
         assert extract_val(i2v_video) == str(dummy_video)
+
+    def test_restore_state_t2v_task(self, tmp_path):
+        """Tests that T2V task inputs and video are restored for the correct device."""
+        dev_id = "device_test_t2v"
+        dummy_video = tmp_path / "t2v_out.mp4"
+        dummy_video.write_bytes(b"video_bytes")
+
+        params = {
+            "prompt": "Deep underwater coral reef with luminescent fish",
+            "res_preset": "16:9 橫向風景 (1344 x 768)",
+            "custom_w": 1344,
+            "custom_h": 768,
+            "duration": 3.0,
+            "seed": 888,
+        }
+        task = task_manager.create_task("T2V", params["prompt"], params, device_id=dev_id)
+        task.status = "completed"
+        task.video_path = str(dummy_video)
+
+        ret = restore_device_state(dev_id, task.task_id)
+        assert len(ret) == len(all_restored_outputs)
+
+        def extract_val(u):
+            return u.get("value") if isinstance(u, dict) else getattr(u, "value", None)
+
+        # T2V prompt is at index 4 + 15 = 19
+        assert extract_val(ret[19]) == "Deep underwater coral reef with luminescent fish"
+
+    def test_restore_state_r2v_task(self, tmp_path):
+        """Tests that R2V task inputs and video are restored for the correct device."""
+        dev_id = "device_test_r2v"
+        dummy_video = tmp_path / "r2v_out.mp4"
+        dummy_video.write_bytes(b"video_bytes")
+
+        params = {
+            "prompt": "Stylized animation of an ancient temple",
+            "ref_image_size": "match",
+            "duration": 2.5,
+            "seed": 999,
+        }
+        task = task_manager.create_task("R2V", params["prompt"], params, device_id=dev_id)
+        task.status = "completed"
+        task.video_path = str(dummy_video)
+
+        ret = restore_device_state(dev_id, task.task_id)
+        assert len(ret) == len(all_restored_outputs)
+
+        def extract_val(u):
+            return u.get("value") if isinstance(u, dict) else getattr(u, "value", None)
+
+        # R2V prompt is at index 4 + 15 + 13 = 32
+        assert extract_val(ret[32]) == "Stylized animation of an ancient temple"
 
     def test_restore_state_strict_device_isolation(self, tmp_path):
         """
