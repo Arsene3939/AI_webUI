@@ -12,8 +12,18 @@ import asyncio
 import websockets
 from typing import Dict, Any, Optional, List
 import requests
-from config import COMFY_SERVER_URL, OUTPUT_DIR
+from config import (
+    COMFY_SERVER_URL,
+    OUTPUT_DIR,
+    normalize_quality_choice,
+    normalize_aspect_ratio,
+    normalize_sampler,
+    normalize_scheduler,
+)
 from comfy_client import queue_prompt, download_output_file, check_server
+from logger import get_logger
+
+logger = get_logger("TaskManager")
 
 HISTORY_FILE = os.path.join(OUTPUT_DIR, "task_history.json")
 INPUTS_ARCHIVE_DIR = os.path.join(OUTPUT_DIR, "inputs")
@@ -116,9 +126,19 @@ class TaskManager:
                     data = json.load(f)
                     for item in data:
                         t = Task.from_dict(item)
+                        if t.params:
+                            if "quality_level" in t.params:
+                                t.params["quality_level"] = normalize_quality_choice(t.params["quality_level"])
+                            if "aspect_ratio" in t.params:
+                                t.params["aspect_ratio"] = normalize_aspect_ratio(t.params["aspect_ratio"])
+                            if "sampler" in t.params:
+                                t.params["sampler"] = normalize_sampler(t.params["sampler"])
+                            if "scheduler" in t.params:
+                                t.params["scheduler"] = normalize_scheduler(t.params["scheduler"])
                         self._tasks[t.task_id] = t
-            except Exception:
-                pass
+                logger.info("Loaded %d task(s) from history file: %s", len(self._tasks), HISTORY_FILE)
+            except Exception as e:
+                logger.warning("Failed to load task history: %s", e)
 
     def _save_history(self):
         try:
@@ -164,6 +184,7 @@ class TaskManager:
         with self._lock:
             self._tasks[task_id] = task
         self._save_history()
+        logger.info("[Task %s] Created [%s] for device '%s' (Prompt: '%s')", task_id, task_type, device_id, prompt[:50])
         return task
 
     def sync_task_with_server(self, task: Optional[Task], server_url: str = COMFY_SERVER_URL) -> Optional[Task]:
@@ -261,8 +282,10 @@ class TaskManager:
             ]
             return sorted(tasks, key=lambda x: x.created_at, reverse=True)
 
-    def start_background_task(self, task: Task, prompt_graph: Dict[str, Any], server_url: str = COMFY_SERVER_URL):
+    def start_background_task(self, task: Task, prompt_graph: Dict[str, Any], server_url: Optional[str] = None):
         """Starts a detached thread to submit to ComfyUI and monitor progress."""
+        server_url = server_url or COMFY_SERVER_URL
+        logger.info("[Task %s] Dispatching to background worker thread...", task.task_id)
         thread = threading.Thread(
             target=self._monitor_worker,
             args=(task, prompt_graph, server_url),
@@ -276,6 +299,7 @@ class TaskManager:
             full_ws = f"{ws_url}/ws?clientId={client_id}"
             try:
                 async with websockets.connect(full_ws, ping_timeout=20, close_timeout=5) as ws:
+                    logger.debug("[Task %s] WebSocket connected to %s", task.task_id, full_ws)
                     while not stop_event.is_set():
                         try:
                             msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
@@ -311,8 +335,8 @@ class TaskManager:
                                             task.stage = "sampling"
                                         elif task.stage not in ("sampling", "postprocessing"):
                                             task.stage = "preprocessing"
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("[Task %s] WebSocket closed or unreachable: %s", task.task_id, e)
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -328,6 +352,7 @@ class TaskManager:
         task.stage = "preprocessing"
         task.message = "⚡ 前處理中：正在提交任務至後端..."
         task.progress = 0.08
+        logger.info("[Task %s] Submitting workflow graph to ComfyUI (%s)...", task.task_id, server_url)
 
         client_id = str(uuid.uuid4())
         try:
@@ -335,11 +360,13 @@ class TaskManager:
             task.prompt_id = prompt_id
             task.message = f"⏳ 排隊中 (ID: {prompt_id[:8]})..."
             task.progress = 0.15
+            logger.info("[Task %s] Prompt queued successfully! Assigned ComfyUI prompt_id: %s", task.task_id, prompt_id)
         except Exception as e:
             task.status = "failed"
             task.stage = "failed"
             task.message = f"❌ 提交失敗: {str(e)}"
             self._save_history()
+            logger.error("[Task %s] Failed to queue prompt to ComfyUI: %s", task.task_id, e)
             return
 
         # Start WebSocket progress listener for real-time steps
@@ -353,6 +380,9 @@ class TaskManager:
         ws_thread.start()
 
         start_time = time.time()
+        last_logged_step = -1
+        last_logged_stage = task.stage
+
         while True:
             elapsed = round(time.time() - start_time, 1)
             task.elapsed = elapsed
@@ -367,6 +397,17 @@ class TaskManager:
                 time_str = f"{mins}分{secs}秒"
             else:
                 time_str = f"{secs}秒"
+
+            # Log stage changes
+            if task.stage != last_logged_stage:
+                logger.info("[Task %s] Stage changed -> %s (%s)", task.task_id, task.stage, task.message)
+                last_logged_stage = task.stage
+
+            # Log step progress
+            if task.stage == "sampling" and task.step != last_logged_step and task.total_steps > 0:
+                logger.info("[Task %s] Sampling: %d/%d steps (%d%%, elapsed: %s)",
+                            task.task_id, task.step, task.total_steps, int(task.progress * 100), time_str)
+                last_logged_step = task.step
 
             # 1. Check if finished or failed in ComfyUI history
             try:
@@ -385,6 +426,7 @@ class TaskManager:
                                     task.stage = "postprocessing"
                                     task.message = f"⚡ 後處理中：正在儲存並下載影片... (耗時 {time_str})"
                                     task.progress = 0.95
+                                    logger.info("[Task %s] Output detected in ComfyUI: %s. Downloading...", task.task_id, fn)
                                     local_path = download_output_file(fn, subfolder, folder_type, server_url)
                                     task.video_path = local_path
                                     task.status = "completed"
@@ -394,6 +436,7 @@ class TaskManager:
                                     task.message = f"✅ 影片生成完成！耗時 {time_str}"
                                     stop_ws.set()
                                     self._save_history()
+                                    logger.info("[Task %s] Completed! Saved to: %s (Total time: %s)", task.task_id, local_path, time_str)
                                     return
 
                     status_info = history.get("status", {})
@@ -403,9 +446,10 @@ class TaskManager:
                         task.message = "❌ 生成失敗，請查看後端錯誤記錄。"
                         stop_ws.set()
                         self._save_history()
+                        logger.error("[Task %s] ComfyUI reported execution error: %s", task.task_id, status_info)
                         return
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("[Task %s] History check exception: %s", task.task_id, e)
 
             # 2. Check queue position / running state
             try:
@@ -431,8 +475,10 @@ class TaskManager:
                         task.stage = "pending"
                         task.progress = 0.18
                         task.message = f"⏳ 排隊中... (已等待 {time_str})"
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("[Task %s] Queue poll exception: %s", task.task_id, e)
+
+            time.sleep(0.5)
 
             time.sleep(0.5)
 

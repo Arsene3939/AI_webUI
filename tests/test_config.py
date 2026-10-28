@@ -10,6 +10,11 @@ from config import (
     calculate_dimensions,
     find_nearest_aspect_ratio,
     quality_level_to_mp,
+    normalize_quality_choice,
+    normalize_aspect_ratio,
+    normalize_sampler,
+    normalize_scheduler,
+    set_comfy_server_url,
     QUALITY_CHOICES,
     QUALITY_LEVEL_TO_MP,
     DEFAULT_QUALITY_LEVEL,
@@ -160,3 +165,67 @@ class TestResolutionAndAspectRatio:
         # Edge cases
         assert find_nearest_aspect_ratio(1920, 0) == "16:9 (橫向風景)"
         assert find_nearest_aspect_ratio(0, 1080) == "9:16 (直向手機)"
+
+
+class TestChoiceNormalizers:
+    def test_normalize_quality_choice_valid_options(self):
+        """Valid choices must be preserved exactly."""
+        for choice in QUALITY_CHOICES:
+            assert normalize_quality_choice(choice) == choice
+
+    def test_normalize_quality_choice_legacy_presets(self):
+        """Legacy preset strings (e.g. 5-level system) must map to valid QUALITY_CHOICES."""
+        legacy_05 = normalize_quality_choice("1 (0.5 MP - 極速)")
+        assert legacy_05 in QUALITY_CHOICES
+        assert "0.4 MP" in legacy_05 or "0.6 MP" in legacy_05
+
+        legacy_075 = normalize_quality_choice("2 (0.75 MP - 快速)")
+        assert legacy_075 in QUALITY_CHOICES
+        assert "0.8 MP" in legacy_075
+
+        legacy_10 = normalize_quality_choice("3 (1.0 MP - 標準)")
+        assert legacy_10 in QUALITY_CHOICES
+        assert "1.0 MP" in legacy_10
+
+    def test_normalize_quality_choice_integers_and_floats(self):
+        """Numeric inputs must safely map to corresponding levels."""
+        assert normalize_quality_choice(1) == QUALITY_CHOICES[0]
+        assert normalize_quality_choice(10) == QUALITY_CHOICES[9]
+        assert normalize_quality_choice("1") == QUALITY_CHOICES[0]
+        assert normalize_quality_choice(1.0) == DEFAULT_QUALITY_LEVEL
+        assert normalize_quality_choice(None) == DEFAULT_QUALITY_LEVEL
+        assert normalize_quality_choice("") == DEFAULT_QUALITY_LEVEL
+        assert normalize_quality_choice("unknown_quality") == DEFAULT_QUALITY_LEVEL
+
+    def test_normalize_aspect_ratio(self):
+        """Checks aspect ratio normalization for valid, prefix, and legacy strings."""
+        for ar in ASPECT_RATIOS:
+            assert normalize_aspect_ratio(ar) == ar
+
+        assert normalize_aspect_ratio("16:9") == "16:9 (橫向風景)"
+        assert normalize_aspect_ratio("9:16") == "9:16 (直向手機)"
+        assert normalize_aspect_ratio("16:9 橫向風景 (1344 x 768)") == "16:9 (橫向風景)"
+        assert normalize_aspect_ratio(None) == "16:9 (橫向風景)"
+        assert normalize_aspect_ratio("invalid") == "16:9 (橫向風景)"
+
+    def test_normalize_sampler_and_scheduler(self):
+        """Checks sampler and scheduler fallback normalization."""
+        for s in SAMPLER_CHOICES:
+            assert normalize_sampler(s) == s
+        assert normalize_sampler("invalid") == "res_multistep"
+        assert normalize_sampler(None) == "res_multistep"
+
+        for sc in SCHEDULER_CHOICES:
+            assert normalize_scheduler(sc) == sc
+        assert normalize_scheduler("invalid") == "simple"
+        assert normalize_scheduler(None) == "simple"
+
+    def test_set_comfy_server_url(self):
+        """Checks dynamic ComfyUI server URL updating."""
+        set_comfy_server_url("http://127.0.0.1:9999")
+        from config import COMFY_SERVER_URL, COMFY_WS_URL
+        assert COMFY_SERVER_URL == "http://127.0.0.1:9999"
+        assert COMFY_WS_URL == "ws://127.0.0.1:9999"
+        # Reset back
+        set_comfy_server_url("http://127.0.0.1:8188")
+

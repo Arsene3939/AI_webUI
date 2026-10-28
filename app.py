@@ -23,9 +23,14 @@ from config import (
     DEFAULT_MULTIPLE,
     QUALITY_CHOICES,
     DEFAULT_QUALITY_LEVEL,
+    OUTPUT_DIR,
     quality_level_to_mp,
     calculate_dimensions,
     find_nearest_aspect_ratio,
+    normalize_quality_choice,
+    normalize_aspect_ratio,
+    normalize_sampler,
+    normalize_scheduler,
     SAMPLER_CHOICES,
     SCHEDULER_CHOICES,
     get_lan_ip,
@@ -42,6 +47,9 @@ from comfy_client import (
     upload_media_file,
 )
 from task_manager import task_manager
+from logger import get_logger
+
+logger = get_logger("App")
 
 CUSTOM_CSS = """
 /* Responsive adjustments for mobile screens */
@@ -97,6 +105,84 @@ button.recover-btn {
     font-weight: 600;
 }
 
+/* Header ID Badge Copy Button */
+.id-badge-btn {
+    background-color: #334155;
+    color: #38bdf8;
+    border: 1px solid #475569;
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.88rem;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    line-height: 1.4;
+    transition: all 0.15s ease-in-out;
+    user-select: none;
+    -webkit-user-select: none;
+    vertical-align: middle;
+}
+
+.id-badge-btn:hover {
+    background-color: #475569;
+    color: #7dd3fc;
+    border-color: #38bdf8;
+    box-shadow: 0 0 8px rgba(56, 189, 248, 0.25);
+}
+
+.id-badge-btn:active {
+    transform: scale(0.96);
+    background-color: #1e293b;
+}
+
+/* Header ID Edit Icon Button */
+.id-edit-btn {
+    background-color: #334155;
+    color: #f8fafc;
+    border: 1px solid #475569;
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    line-height: 1.4;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease-in-out;
+    user-select: none;
+    -webkit-user-select: none;
+    vertical-align: middle;
+}
+
+.id-edit-btn:hover {
+    background-color: #475569;
+    border-color: #38bdf8;
+    box-shadow: 0 0 8px rgba(56, 189, 248, 0.25);
+    transform: scale(1.05);
+}
+
+.id-edit-btn:active {
+    transform: scale(0.95);
+}
+
+/* Hidden Trigger Button for clean layout */
+.hidden-trigger-btn {
+    position: fixed !important;
+    left: -9999px !important;
+    top: -9999px !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    overflow: hidden !important;
+}
+
 /* Mobile video player fix */
 video {
     width: 100% !important;
@@ -117,6 +203,65 @@ video {
 }
 """
 
+CUSTOM_HEAD_JS = """
+<script>
+window.copyDeviceId = function(btn, text) {
+    function showSuccess() {
+        var orig = btn.innerHTML;
+        btn.innerHTML = '✅ 已複製!';
+        btn.style.borderColor = '#22c55e';
+        btn.style.color = '#86efac';
+        setTimeout(function() {
+            btn.innerHTML = orig;
+            btn.style.borderColor = '';
+            btn.style.color = '';
+        }, 1500);
+    }
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(showSuccess, function() {
+            window.fallbackCopy(text, showSuccess);
+        });
+    } else {
+        window.fallbackCopy(text, showSuccess);
+    }
+};
+
+window.fallbackCopy = function(text, cb) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.style.top = '-9999px';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try {
+        var successful = document.execCommand('copy');
+        if (successful) {
+            cb();
+        } else {
+            prompt('請手動選取並複製代碼：', text);
+        }
+    } catch (err) {
+        prompt('請手動選取並複製代碼：', text);
+    }
+    document.body.removeChild(ta);
+};
+
+window.triggerEditId = function() {
+    var triggerBtn = document.getElementById('edit-id-trigger-btn');
+    if (triggerBtn) {
+        var btn = triggerBtn.tagName === 'BUTTON' ? triggerBtn : triggerBtn.querySelector('button');
+        if (btn) {
+            btn.click();
+        } else {
+            triggerBtn.click();
+        }
+    }
+};
+</script>
+"""
+
 lan_ip = get_lan_ip()
 server_ok, server_status_msg = check_server(COMFY_SERVER_URL)
 
@@ -124,7 +269,12 @@ server_ok, server_status_msg = check_server(COMFY_SERVER_URL)
 def build_header_html(device_id=None):
     if device_id:
         short_hash = device_id.split("_")[-1][:6]
-        dev_str = f' | <span class="id-badge">ID:{short_hash}</span>'
+        dev_str = (
+            f' | <span style="display: inline-flex; align-items: center; gap: 4px; vertical-align: middle;">'
+            f'<button type="button" class="id-badge-btn" onclick="copyDeviceId(this, \'{short_hash}\')" title="點擊複製裝置代碼 ({short_hash})">📋 ID:{short_hash}</button>'
+            f'<button type="button" class="id-edit-btn" onclick="triggerEditId()" title="手動指定裝置代碼">✏️</button>'
+            f'</span>'
+        )
     else:
         dev_str = ""
     return f"""
@@ -186,6 +336,8 @@ def build_progress_html(task_or_msg) -> str:
 
 def on_resolution_change(ar, quality_str):
     """Calculates width and height when aspect ratio or quality level changes."""
+    ar = normalize_aspect_ratio(ar)
+    quality_str = normalize_quality_choice(quality_str)
     w, h = calculate_dimensions(ar, quality_str, multiple=DEFAULT_MULTIPLE)
     actual_mp = round((w * h) / 1_000_000, 2)
     info_text = f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP)"
@@ -197,9 +349,11 @@ def on_first_frame_change(img_path, current_quality_str):
     if not img_path or not os.path.exists(img_path):
         return gr.update(), gr.update(), gr.update(), gr.update(), ""
     try:
+        current_quality_str = normalize_quality_choice(current_quality_str)
         with Image.open(img_path) as im:
             orig_w, orig_h = im.size
         nearest_ar = find_nearest_aspect_ratio(orig_w, orig_h)
+        nearest_ar = normalize_aspect_ratio(nearest_ar)
         w, h = calculate_dimensions(nearest_ar, current_quality_str, multiple=DEFAULT_MULTIPLE)
         actual_mp = round((w * h) / 1_000_000, 2)
         info_text = f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP)"
@@ -293,10 +447,17 @@ def handle_i2v_generate(
         yield build_progress_html("❌ 請輸入提示詞"), None, current_session_task, device_id
         return
 
+    aspect_ratio = normalize_aspect_ratio(aspect_ratio)
+    quality_level = normalize_quality_choice(quality_level)
+    sampler = normalize_sampler(sampler)
+    scheduler = normalize_scheduler(scheduler)
+
     # Snap to nearest multiple of 32 (Required by MiniMax-H3 VAE 16x downsample + DiT 2x2 patchify)
     w = max(32, int(round(int(custom_w) / 32) * 32))
     h = max(32, int(round(int(custom_h) / 32) * 32))
 
+    logger.info("[I2V] Request from device '%s': size=%dx%d, steps=%s, seed=%s, duration=%ss, prompt='%s'",
+                device_id, w, h, steps, seed, duration, prompt[:50])
     yield build_progress_html("⚡ 前處理中：正在上傳圖片..."), None, current_session_task, device_id
     try:
         first_frame_fn = upload_media_file(first_frame)
@@ -388,11 +549,19 @@ def handle_t2v_generate(
         yield build_progress_html("❌ 請輸入提示詞"), None, current_session_task, device_id
         return
 
+    aspect_ratio = normalize_aspect_ratio(aspect_ratio)
+    quality_level = normalize_quality_choice(quality_level)
+    sampler = normalize_sampler(sampler)
+    scheduler = normalize_scheduler(scheduler)
+
     yield build_progress_html("⚡ 前處理中：正在準備生成任務..."), None, current_session_task, device_id
 
     # Snap to nearest multiple of 32 (Required by MiniMax-H3 VAE 16x downsample + DiT 2x2 patchify)
     w = max(32, int(round(int(custom_w) / 32) * 32))
     h = max(32, int(round(int(custom_h) / 32) * 32))
+
+    logger.info("[T2V] Request from device '%s': size=%dx%d, steps=%s, seed=%s, duration=%ss, prompt='%s'",
+                device_id, w, h, steps, seed, duration, prompt[:50])
 
     prompt_graph = build_t2v_workflow(
         prompt=prompt,
@@ -477,9 +646,17 @@ def handle_r2v_generate(
         yield build_progress_html("❌ 請輸入提示詞"), None, current_session_task, device_id
         return
 
+    aspect_ratio = normalize_aspect_ratio(aspect_ratio)
+    quality_level = normalize_quality_choice(quality_level)
+    sampler = normalize_sampler(sampler)
+    scheduler = normalize_scheduler(scheduler)
+
     # Snap to nearest multiple of 32 (Required by MiniMax-H3 VAE 16x downsample + DiT 2x2 patchify)
     w = max(32, int(round(int(custom_w) / 32) * 32))
     h = max(32, int(round(int(custom_h) / 32) * 32))
+
+    logger.info("[R2V] Request from device '%s': size=%dx%d, steps=%s, seed=%s, duration=%ss, prompt='%s'",
+                device_id, w, h, steps, seed, duration, prompt[:50])
 
     yield build_progress_html("⚡ 前處理中：正在上傳參考素材..."), None, current_session_task, device_id
 
@@ -583,6 +760,7 @@ def restore_device_state(stored_device_id, stored_task_id):
 
     # Fetch task for THIS device only (No cross-device leakage!)
     task = task_manager.get_task(stored_task_id, device_id=stored_device_id) or task_manager.get_latest_task_for_device(stored_device_id)
+    logger.info("[Session] Device connected/restoring: %s (Active task: %s)", stored_device_id, task.task_id if task else "None")
 
     # Defaults (Leave untouched if no task)
     i2v_updates = [gr.update()] * 16
@@ -597,8 +775,8 @@ def restore_device_state(stored_device_id, stored_task_id):
                 gr.update(value=p.get("first_frame")),
                 gr.update(value=p.get("last_frame")),
                 gr.update(value=p.get("prompt", task.prompt)),
-                gr.update(value=p.get("aspect_ratio", "16:9 (橫向風景)")),
-                gr.update(value=p.get("quality_level", DEFAULT_QUALITY_LEVEL)),
+                gr.update(value=normalize_aspect_ratio(p.get("aspect_ratio"))),
+                gr.update(value=normalize_quality_choice(p.get("quality_level"))),
                 gr.update(value=p.get("custom_w", 1344)),
                 gr.update(value=p.get("custom_h", 768)),
                 gr.update(value=p.get("duration", 2.0)),
@@ -606,16 +784,16 @@ def restore_device_state(stored_device_id, stored_task_id):
                 gr.update(value=p.get("steps", 20)),
                 gr.update(value=p.get("denoise", 1.0)),
                 gr.update(value=p.get("fps", 24)),
-                gr.update(value=p.get("sampler", "res_multistep")),
-                gr.update(value=p.get("scheduler", "simple")),
+                gr.update(value=normalize_sampler(p.get("sampler"))),
+                gr.update(value=normalize_scheduler(p.get("scheduler"))),
                 gr.update(value=build_progress_html(task)),
                 gr.update(value=task.video_path if task.video_path and os.path.exists(task.video_path) else None),
             ]
         elif task.task_type == "T2V":
             t2v_updates = [
                 gr.update(value=p.get("prompt", task.prompt)),
-                gr.update(value=p.get("aspect_ratio", "16:9 (橫向風景)")),
-                gr.update(value=p.get("quality_level", DEFAULT_QUALITY_LEVEL)),
+                gr.update(value=normalize_aspect_ratio(p.get("aspect_ratio"))),
+                gr.update(value=normalize_quality_choice(p.get("quality_level"))),
                 gr.update(value=p.get("custom_w", 1344)),
                 gr.update(value=p.get("custom_h", 768)),
                 gr.update(value=p.get("duration", 2.0)),
@@ -623,8 +801,8 @@ def restore_device_state(stored_device_id, stored_task_id):
                 gr.update(value=p.get("steps", 20)),
                 gr.update(value=p.get("denoise", 1.0)),
                 gr.update(value=p.get("fps", 24)),
-                gr.update(value=p.get("sampler", "res_multistep")),
-                gr.update(value=p.get("scheduler", "simple")),
+                gr.update(value=normalize_sampler(p.get("sampler"))),
+                gr.update(value=normalize_scheduler(p.get("scheduler"))),
                 gr.update(value=build_progress_html(task)),
                 gr.update(value=task.video_path if task.video_path and os.path.exists(task.video_path) else None),
             ]
@@ -638,8 +816,8 @@ def restore_device_state(stored_device_id, stored_task_id):
                 gr.update(value=p.get("ref_img_3")),
                 gr.update(value=p.get("ref_img_4")),
                 gr.update(value=p.get("ref_image_size", "match")),
-                gr.update(value=p.get("aspect_ratio", "16:9 (橫向風景)")),
-                gr.update(value=p.get("quality_level", DEFAULT_QUALITY_LEVEL)),
+                gr.update(value=normalize_aspect_ratio(p.get("aspect_ratio"))),
+                gr.update(value=normalize_quality_choice(p.get("quality_level"))),
                 gr.update(value=p.get("custom_w", 1344)),
                 gr.update(value=p.get("custom_h", 768)),
                 gr.update(value=p.get("duration", 3.0)),
@@ -647,8 +825,8 @@ def restore_device_state(stored_device_id, stored_task_id):
                 gr.update(value=p.get("steps", 20)),
                 gr.update(value=p.get("denoise", 1.0)),
                 gr.update(value=p.get("fps", 24)),
-                gr.update(value=p.get("sampler", "res_multistep")),
-                gr.update(value=p.get("scheduler", "simple")),
+                gr.update(value=normalize_sampler(p.get("sampler"))),
+                gr.update(value=normalize_scheduler(p.get("scheduler"))),
                 gr.update(value=build_progress_html(task)),
                 gr.update(value=task.video_path if task.video_path and os.path.exists(task.video_path) else None),
             ]
@@ -676,6 +854,7 @@ def switch_manual_device_id(custom_id, current_device_id, session_task_id):
     if not val.startswith("dev_"):
         val = f"dev_{val}"
 
+    logger.info("[Session] Device ID manual switch: '%s' -> '%s'", current_device_id, val)
     restored = restore_device_state(val, None)
     return (gr.update(visible=False), *restored)
 
@@ -696,9 +875,8 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
         secret=DEVICE_STORAGE_SECRET,
     )
 
-    with gr.Row(elem_classes=["header-row"]):
-        header_html = gr.HTML(build_header_html(), scale=9)
-        edit_id_btn = gr.Button("✏️ 輸入ID", variant="secondary", scale=1, min_width=85)
+    header_html = gr.HTML(build_header_html())
+    edit_id_btn = gr.Button("✏️", elem_id="edit-id-trigger-btn", elem_classes=["hidden-trigger-btn"])
 
     with gr.Row(visible=False) as edit_id_row:
         manual_id_input = gr.Textbox(
@@ -1195,6 +1373,7 @@ def print_port_conflict_help(port: int):
         print(" 3. 若欲強制結束佔用此連接埠的進程，可開啟命令提示字元（CMD）或 PowerShell 執行：")
         for k_cmd in kill_cmds:
             print(f"    👉 {k_cmd}")
+        print(f"    （亦可手動執行 netstat -ano | findstr :{port} 再次確認通訊狀態）")
     else:
         print(f" 3. 可於終端機執行下列指令查詢佔用此連接埠的 PID：")
         print(f"    👉 netstat -ano | findstr :{port}")
@@ -1209,6 +1388,16 @@ def launch_webui(port: int = WEBUI_PORT, raise_on_error: bool = False, **launch_
     If the port is occupied, displays a clear error and troubleshooting guide for the admin.
     """
     import sys
+    import threading
+
+    # If running inside Gradio's reload watcher thread or server is already running, bypass re-launch
+    if (
+        getattr(demo, "_is_running_in_reload_thread", False)
+        or getattr(demo, "is_running", False)
+        or (os.environ.get("GRADIO_WATCH_DIRS") and threading.current_thread() is not threading.main_thread())
+    ):
+        return demo
+
     if is_port_in_use(port):
         print_port_conflict_help(port)
         if raise_on_error:
@@ -1221,6 +1410,16 @@ def launch_webui(port: int = WEBUI_PORT, raise_on_error: bool = False, **launch_
     print(f"Mobile LAN Access: http://{lan_ip}:{port}")
     print(f"ComfyUI Backend: {COMFY_SERVER_URL}")
     print("=" * 60)
+    logger.info("Starting Gradio WebUI on http://%s:%s (Local: http://127.0.0.1:%s, Mobile: http://%s:%s)",
+                WEBUI_HOST, port, port, lan_ip, port)
+
+    allowed = [OUTPUT_DIR]
+    if "allowed_paths" in launch_kwargs:
+        extra_paths = launch_kwargs.pop("allowed_paths")
+        if isinstance(extra_paths, list):
+            allowed.extend(extra_paths)
+        else:
+            allowed.append(extra_paths)
 
     kwargs = {
         "server_name": WEBUI_HOST,
@@ -1228,6 +1427,8 @@ def launch_webui(port: int = WEBUI_PORT, raise_on_error: bool = False, **launch_
         "share": False,
         "theme": gr.themes.Default(primary_hue="blue"),
         "css": CUSTOM_CSS,
+        "head": CUSTOM_HEAD_JS,
+        "allowed_paths": list(set(allowed)),
     }
     kwargs.update(launch_kwargs)
     try:

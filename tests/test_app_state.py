@@ -52,6 +52,30 @@ class TestStateRestoration:
         assigned_device_id = ret[0]
         assert assigned_device_id.startswith("dev_")
 
+    def test_restore_state_legacy_quality_choices(self):
+        """Tests that legacy quality string (e.g. '1 (0.5 MP - 極速)') is normalized on restore without crash."""
+        from config import QUALITY_CHOICES
+        dev_id = "device_test_legacy_quality"
+        params = {
+            "prompt": "Legacy prompt",
+            "quality_level": "1 (0.5 MP - 極速)",
+            "aspect_ratio": "16:9 橫向風景 (1344 x 768)",
+            "sampler": "unknown_sampler",
+            "scheduler": "unknown_scheduler",
+        }
+        task = task_manager.create_task("I2V", params["prompt"], params, device_id=dev_id)
+        ret = restore_device_state(dev_id, task.task_id)
+
+        # Check I2V quality update (output index 8)
+        quality_update = ret[8]
+        val = quality_update.get("value") if isinstance(quality_update, dict) else quality_update
+        assert val in QUALITY_CHOICES, f"Restored quality {val} must be in QUALITY_CHOICES"
+
+        # Check I2V aspect ratio update (output index 7)
+        ar_update = ret[7]
+        ar_val = ar_update.get("value") if isinstance(ar_update, dict) else ar_update
+        assert ar_val == "16:9 (橫向風景)"
+
     def test_restore_state_i2v_task(self, tmp_path):
         """Tests that I2V task inputs and video are restored for the correct device."""
         dev_id = "device_test_i2v"
@@ -374,17 +398,15 @@ class TestStateRestoration:
         """Tests that launch_webui displays diagnostic guidance and refuses to randomly switch ports (Spec 12)."""
         import socket
         import pytest
-        from app import launch_webui, is_port_in_use
+        from app import launch_webui
 
         test_port = 7885
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(("127.0.0.1", test_port))
-        sock.listen(1)
+        sock.listen(5)
 
         try:
-            assert is_port_in_use(test_port) is True
-
             # Expect OSError when raise_on_error=True
             with pytest.raises(OSError) as exc_info:
                 launch_webui(port=test_port, raise_on_error=True)

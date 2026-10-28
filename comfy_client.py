@@ -12,6 +12,9 @@ import asyncio
 import websockets
 from typing import Optional, Tuple, Generator, Dict, Any
 from config import COMFY_SERVER_URL, COMFY_WS_URL, OUTPUT_DIR
+from logger import get_logger
+
+logger = get_logger("ComfyClient")
 
 COMFY_ROOT = r"F:\program_file\Comfy-Desktop\ComfyUI-Installs\ComfyUI\ComfyUI"
 COMFY_PYTHON = r"F:\program_file\Comfy-Desktop\ComfyUI-Installs\ComfyUI\ComfyUI\.venv\Scripts\python.exe"
@@ -19,8 +22,9 @@ COMFY_PYTHON = r"F:\program_file\Comfy-Desktop\ComfyUI-Installs\ComfyUI\ComfyUI\
 _COMFY_PROCESS: Optional[subprocess.Popen] = None
 
 
-def check_server(server_url: str = COMFY_SERVER_URL) -> Tuple[bool, str]:
+def check_server(server_url: Optional[str] = None) -> Tuple[bool, str]:
     """Check if the ComfyUI server is reachable."""
+    server_url = server_url or COMFY_SERVER_URL
     try:
         resp = requests.get(f"{server_url}/system_stats", timeout=3)
         if resp.status_code == 200:
@@ -30,17 +34,21 @@ def check_server(server_url: str = COMFY_SERVER_URL) -> Tuple[bool, str]:
         return False, "🔴 ComfyUI 未連線 (離線中)"
 
 
-def start_comfyui_backend(server_url: str = COMFY_SERVER_URL) -> Tuple[bool, str]:
+def start_comfyui_backend(server_url: Optional[str] = None) -> Tuple[bool, str]:
     """Starts the ComfyUI backend server in an independent process if not running."""
     global _COMFY_PROCESS
+    server_url = server_url or COMFY_SERVER_URL
     is_ok, _ = check_server(server_url)
     if is_ok:
+        logger.info("ComfyUI backend already running at %s", server_url)
         return True, "🟢 後端已經在運作中，無須重複啟動"
 
     main_py = os.path.join(COMFY_ROOT, "main.py")
     if not os.path.exists(main_py):
+        logger.error("ComfyUI main script missing: %s", main_py)
         return False, f"❌ 找不到 ComfyUI 核心主程式: {main_py}"
     if not os.path.exists(COMFY_PYTHON):
+        logger.error("ComfyUI Python venv missing: %s", COMFY_PYTHON)
         return False, f"❌ 找不到 Python 解譯器: {COMFY_PYTHON}"
 
     cmd = [
@@ -54,8 +62,10 @@ def start_comfyui_backend(server_url: str = COMFY_SERVER_URL) -> Tuple[bool, str
 
     try:
         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
+        logger.info("Spawning ComfyUI backend process: %s", " ".join(cmd))
         _COMFY_PROCESS = subprocess.Popen(cmd, cwd=COMFY_ROOT, creationflags=flags)
     except Exception as e:
+        logger.error("Failed to spawn ComfyUI process: %s", e)
         return False, f"❌ 啟動進程失敗: {str(e)}"
 
     # Wait and verify up to 15 seconds
@@ -63,18 +73,23 @@ def start_comfyui_backend(server_url: str = COMFY_SERVER_URL) -> Tuple[bool, str
         time.sleep(1)
         ok, _ = check_server(server_url)
         if ok:
+            logger.info("ComfyUI backend verified online at %s", server_url)
             return True, "🟢 後端已成功啟動並就緒！"
 
+    logger.info("ComfyUI start command sent; still loading in background")
     return True, "⏳ 已送出啟動指令，正在背景載入中，約需 5~10 秒..."
 
 
-def stop_comfyui_backend(server_url: str = COMFY_SERVER_URL) -> Tuple[bool, str]:
+def stop_comfyui_backend(server_url: Optional[str] = None) -> Tuple[bool, str]:
     """Stops the ComfyUI backend process."""
     global _COMFY_PROCESS
+    server_url = server_url or COMFY_SERVER_URL
     is_ok, _ = check_server(server_url)
     if not is_ok and _COMFY_PROCESS is None:
+        logger.info("ComfyUI backend already offline")
         return False, "🔴 後端本來就未在運作中。"
 
+    logger.info("Stopping ComfyUI backend (server_url: %s)...", server_url)
     # 1. Terminate tracked subprocess if available
     if _COMFY_PROCESS is not None:
         try:
@@ -96,25 +111,32 @@ def stop_comfyui_backend(server_url: str = COMFY_SERVER_URL) -> Tuple[bool, str]
         for line in out.splitlines():
             pid = line.strip()
             if pid and pid.isdigit() and int(pid) > 0:
+                logger.info("Terminating process PID %s on port %s", pid, port)
                 subprocess.run(f"taskkill /F /PID {pid} /T", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Error stopping port processes: %s", e)
 
     time.sleep(1)
     is_ok, _ = check_server(server_url)
     if not is_ok:
+        logger.info("ComfyUI backend stopped successfully.")
         return True, "🛑 後端已成功關閉。"
     else:
+        logger.warning("ComfyUI backend failed to terminate completely.")
         return False, "⚠️ 嘗試關閉後端失敗，請手動檢查終端機。"
 
 
-def upload_media_file(file_path: str, server_url: str = COMFY_SERVER_URL) -> str:
+def upload_media_file(file_path: str, server_url: Optional[str] = None) -> str:
     """Uploads an image, video, or audio file to ComfyUI's input directory."""
+    server_url = server_url or COMFY_SERVER_URL
     if not file_path or not os.path.exists(file_path):
+        logger.error("Upload failed: file not found: %s", file_path)
         raise FileNotFoundError(f"檔案不存在: {file_path}")
 
     filename = os.path.basename(file_path)
+    file_size = os.path.getsize(file_path)
     url = f"{server_url}/upload/image"
+    logger.info("Uploading media file '%s' (%d bytes) to %s...", filename, file_size, url)
 
     with open(file_path, "rb") as f:
         files = {"image": (filename, f)}
@@ -122,32 +144,42 @@ def upload_media_file(file_path: str, server_url: str = COMFY_SERVER_URL) -> str
         response = requests.post(url, files=files, data=data, timeout=60)
         response.raise_for_status()
         result = response.json()
-        return result.get("name", filename)
+        uploaded_name = result.get("name", filename)
+        logger.info("Media file uploaded successfully as '%s'", uploaded_name)
+        return uploaded_name
 
 
-def queue_prompt(prompt_graph: Dict[str, Any], client_id: str, server_url: str = COMFY_SERVER_URL) -> str:
+def queue_prompt(prompt_graph: Dict[str, Any], client_id: str, server_url: Optional[str] = None) -> str:
     """Submits a prompt graph to ComfyUI."""
+    server_url = server_url or COMFY_SERVER_URL
     url = f"{server_url}/prompt"
     payload = {"prompt": prompt_graph, "client_id": client_id}
+    logger.info("Submitting prompt graph (%d nodes, client_id: %s) to %s...", len(prompt_graph), client_id[:8], url)
     response = requests.post(url, json=payload, timeout=30)
     response.raise_for_status()
     data = response.json()
     if "prompt_id" not in data:
         error_msg = data.get("error", "未知錯誤")
         node_errors = data.get("node_errors", {})
+        logger.error("ComfyUI rejected prompt execution: %s (%s)", error_msg, node_errors)
         raise RuntimeError(f"ComfyUI 拒絕執行: {error_msg} ({json.dumps(node_errors, ensure_ascii=False)})")
-    return data["prompt_id"]
+    prompt_id = data["prompt_id"]
+    logger.info("ComfyUI accepted prompt! Assigned prompt_id: %s", prompt_id)
+    return prompt_id
 
 
 def download_output_file(
     filename: str,
     subfolder: str = "",
     folder_type: str = "output",
-    server_url: str = COMFY_SERVER_URL,
+    server_url: Optional[str] = None,
 ) -> str:
     """Downloads an output file from ComfyUI to local output directory."""
+    server_url = server_url or COMFY_SERVER_URL
     params = {"filename": filename, "subfolder": subfolder, "type": folder_type}
-    resp = requests.get(f"{server_url}/view", params=params, stream=True, timeout=120)
+    view_url = f"{server_url}/view"
+    logger.info("Downloading output file '%s' from %s...", filename, view_url)
+    resp = requests.get(view_url, params=params, stream=True, timeout=120)
     resp.raise_for_status()
 
     local_filename = f"{int(time.time())}_{filename}"
@@ -158,6 +190,8 @@ def download_output_file(
             if chunk:
                 f.write(chunk)
 
+    file_size = os.path.getsize(local_path)
+    logger.info("Downloaded output file saved to %s (%d bytes)", local_path, file_size)
     return local_path
 
 

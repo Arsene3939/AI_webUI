@@ -64,6 +64,99 @@ QUALITY_CHOICES = [
 DEFAULT_QUALITY_LEVEL = "5 (1.0 MP - 標準推薦)"
 
 
+def normalize_quality_choice(val: Any) -> str:
+    """
+    Normalizes any quality value (string descriptor, legacy preset string,
+    megapixels float, or level int) to a guaranteed valid element of QUALITY_CHOICES.
+    """
+    if not val:
+        return DEFAULT_QUALITY_LEVEL
+
+    # 1. Exact match with current choices
+    if isinstance(val, str) and val in QUALITY_CHOICES:
+        return val
+
+    # 2. Integer level matching (1..10)
+    if isinstance(val, int) and 1 <= val <= len(QUALITY_CHOICES):
+        return QUALITY_CHOICES[val - 1]
+
+    val_str = str(val).strip()
+
+    # 3. Plain integer string e.g. "1" .. "10"
+    if val_str.isdigit():
+        num = int(val_str)
+        if 1 <= num <= len(QUALITY_CHOICES):
+            return QUALITY_CHOICES[num - 1]
+
+    # 4. Extract MP float from string or number and find closest choice
+    try:
+        mp = quality_level_to_mp(val)
+        return min(QUALITY_CHOICES, key=lambda c: abs(quality_level_to_mp(c) - mp))
+    except Exception:
+        pass
+
+    return DEFAULT_QUALITY_LEVEL
+
+
+def normalize_aspect_ratio(val: Any) -> str:
+    """
+    Normalizes any aspect ratio string (exact key, prefix, legacy format, or dimension)
+    to a guaranteed valid element of ASPECT_RATIOS.keys().
+    """
+    default_ar = "16:9 (橫向風景)"
+    if not val:
+        return default_ar
+
+    val_str = str(val).strip()
+
+    # 1. Exact match
+    if val_str in ASPECT_RATIOS:
+        return val_str
+
+    # 2. Check if starts with rw:rh e.g. "16:9", "9:16", "1:1", etc.
+    for k, (rw, rh) in ASPECT_RATIOS.items():
+        if val_str.startswith(f"{rw}:{rh}"):
+            return k
+
+    # 3. Legacy resolution presets (e.g., "16:9 橫向風景 (1344 x 768)")
+    for k in ASPECT_RATIOS:
+        prefix = k.split()[0]  # e.g. "16:9"
+        if prefix in val_str:
+            return k
+
+    return default_ar
+
+
+def normalize_sampler(val: Any) -> str:
+    """Guarantees returned sampler is in SAMPLER_CHOICES."""
+    if val and isinstance(val, str) and val in SAMPLER_CHOICES:
+        return val
+    return SAMPLER_CHOICES[0]
+
+
+def normalize_scheduler(val: Any) -> str:
+    """Guarantees returned scheduler is in SCHEDULER_CHOICES."""
+    if val and isinstance(val, str) and val in SCHEDULER_CHOICES:
+        return val
+    return SCHEDULER_CHOICES[0]
+
+
+def set_comfy_server_url(url: str):
+    """Dynamically updates the ComfyUI server URL and syncs imported references."""
+    global COMFY_SERVER_URL, COMFY_WS_URL
+    COMFY_SERVER_URL = url
+    COMFY_WS_URL = url.replace("http://", "ws://").replace("https://", "wss://")
+    import sys
+    for mod_name in ["comfy_client", "task_manager", "app"]:
+        if mod_name in sys.modules:
+            mod = sys.modules[mod_name]
+            if hasattr(mod, "COMFY_SERVER_URL"):
+                setattr(mod, "COMFY_SERVER_URL", url)
+            if hasattr(mod, "COMFY_WS_URL"):
+                setattr(mod, "COMFY_WS_URL", COMFY_WS_URL)
+
+
+
 def quality_level_to_mp(level_val: Any) -> float:
     """Converts a quality level (1~10 or string descriptor) or float to megapixels float."""
     # If float passed directly (e.g. 1.0, 0.5, 1.25)
