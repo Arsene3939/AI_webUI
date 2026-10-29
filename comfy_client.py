@@ -154,6 +154,12 @@ def start_comfyui_backend(server_url: Optional[str] = None, skip_resource_check:
     ]
 
     try:
+        from windows_notifier import send_windows_notification
+        send_windows_notification("已收到連線請求，正在啟動 ComfyUI 後端服務...", "⚡ MiniMax-H3 後端啟動通知")
+    except Exception:
+        pass
+
+    try:
         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
         logger.info("Spawning ComfyUI backend process: %s", " ".join(cmd))
         _COMFY_PROCESS = subprocess.Popen(cmd, cwd=COMFY_ROOT, creationflags=flags)
