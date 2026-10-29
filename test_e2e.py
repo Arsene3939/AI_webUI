@@ -451,10 +451,16 @@ class E2ETestRunner:
             blocked_task = task_manager.get_task(final_task_id, device_id=stranger_device_id)
             assert blocked_task is None, "Stranger device improperly accessed user's isolated task!"
 
+            # 4. User deletes task via on_delete_history_item (Spec Task 7)
+            updated_dd, empty_v, _ = app.on_delete_history_item(final_task_id, user_device_id)
+            updated_choices = updated_dd.get("choices") if isinstance(updated_dd, dict) else getattr(updated_dd, "choices", [])
+            assert not any(t_id == final_task_id for _, t_id in updated_choices), "Deleted task still appears in user history!"
+            assert task_manager.get_task(final_task_id, device_id=user_device_id) is None, "Task still present in task_manager after delete!"
+
             self.log_step(
-                "Step 7: History Gallery & Multi-Device Segregation",
+                "Step 7: History Gallery & Multi-Device Segregation (Including Delete)",
                 True,
-                "History retrieval verified; strict isolation between devices confirmed",
+                "History retrieval, delete operation, and strict isolation between devices confirmed",
                 time.time() - t0
             )
         except Exception as e:

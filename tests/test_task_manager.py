@@ -156,6 +156,36 @@ class TestTaskManagerIsolation:
         assert loaded.prompt == "Persistent task"
         assert loaded.params["seed"] == 100
 
+    def test_delete_task_success_and_device_isolation(self, tmp_path):
+        """Ensures delete_task removes task, cleans up video, and protects other devices (Spec Task 7)."""
+        tm = TaskManager()
+
+        dummy_video = tmp_path / "del_video.mp4"
+        dummy_video.write_bytes(b"dummy_video_data")
+        assert dummy_video.exists()
+
+        t = tm.create_task("I2V", "Task to delete", {}, device_id="dev_del_owner")
+        t.status = "completed"
+        t.video_path = str(dummy_video)
+        tm._save_history()
+
+        # 1. Unauthorized device cannot delete
+        assert tm.delete_task(t.task_id, device_id="dev_other_user") is False
+        assert tm.get_task(t.task_id, device_id="dev_del_owner") is not None
+        assert dummy_video.exists()
+
+        # 2. Deleting non-existent task returns False
+        assert tm.delete_task("non_existent_id", device_id="dev_del_owner") is False
+
+        # 3. Authorized owner deletes task
+        assert tm.delete_task(t.task_id, device_id="dev_del_owner") is True
+        assert tm.get_task(t.task_id, device_id="dev_del_owner") is None
+        assert not dummy_video.exists()
+
+        # 4. Verified persistence after deletion
+        tm_reloaded = TaskManager()
+        assert tm_reloaded.get_task(t.task_id, device_id="dev_del_owner") is None
+
 
 class TestTaskManagerBackgroundWorker:
     @patch("task_manager.download_output_file")

@@ -342,6 +342,45 @@ class TaskManager:
         logger.info("Task %s explicitly interrupted.", task_id)
         return True
 
+    def delete_task(self, task_id: Optional[str], device_id: Optional[str] = None) -> bool:
+        """
+        Deletes a task from history, memory, and removes its output video from disk.
+        Strictly verifies device ownership if device_id is provided.
+        Returns True if task was found and deleted, False otherwise.
+        """
+        if not task_id:
+            return False
+
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                return False
+            if device_id and not _is_same_device(task.device_id, device_id):
+                logger.warning("[TaskManager] Unauthorized delete attempt for task %s (task device: %s, caller device: %s)",
+                               task_id, task.device_id, device_id)
+                return False
+
+            # If task is currently running/queued, cancel it
+            if task.status in ("queued", "running"):
+                task.cancel_event.set()
+                task.status = "interrupted"
+
+            # Remove video file from disk if present
+            if task.video_path and os.path.exists(task.video_path):
+                try:
+                    os.remove(task.video_path)
+                    logger.info("[TaskManager] Deleted video file: %s", task.video_path)
+                except Exception as e:
+                    logger.warning("[TaskManager] Failed to delete video file %s: %s", task.video_path, e)
+
+            # Remove task from in-memory tracking
+            del self._tasks[task_id]
+
+        # Atomically persist updated task history
+        self._save_history()
+        logger.info("[TaskManager] Task '%s' successfully deleted (device: %s)", task_id, device_id)
+        return True
+
     def start_background_task(self, task: Task, prompt_graph: Dict[str, Any], server_url: Optional[str] = None):
         """Starts a detached thread to submit to ComfyUI and monitor progress."""
         server_url = server_url or COMFY_SERVER_URL
@@ -425,7 +464,7 @@ class TaskManager:
                 return
             prompt_id = queue_prompt(prompt_graph, client_id, server_url)
             task.prompt_id = prompt_id
-            task.message = f"⏳ 排隊中 (ID: {prompt_id[:8]})..."
+            task.message = "⏳ 排隊中..."
             task.progress = 0.15
             logger.info("[Task %s] Prompt queued successfully! Assigned ComfyUI prompt_id: %s", task.task_id, prompt_id)
         except Exception as e:
@@ -503,7 +542,7 @@ class TaskManager:
                                     subfolder = it.get("subfolder", "")
                                     folder_type = it.get("type", "output")
                                     task.stage = "postprocessing"
-                                    task.message = f"⚡ 後處理中：正在儲存並下載影片... (耗時 {time_str})"
+                                    task.message = f"⚡ 後處理中：正在儲存影片... (耗時 {time_str})"
                                     task.progress = 0.95
                                     logger.info("[Task %s] Output detected in ComfyUI: %s. Downloading...", task.task_id, fn)
                                     local_path = download_output_file(fn, subfolder, folder_type, server_url)
@@ -540,16 +579,16 @@ class TaskManager:
 
                     if task.total_steps > 0 and task.step >= task.total_steps:
                         task.stage = "postprocessing"
-                        task.message = f"⚡ 後處理中 (解碼與合成影片)... (耗時 {time_str})"
+                        task.message = f"⚡ 後處理中：正在合成影片... (耗時 {time_str})"
                     elif task.stage == "postprocessing":
-                        task.message = f"⚡ 後處理中 (解碼與合成影片)... (耗時 {time_str})"
+                        task.message = f"⚡ 後處理中：正在合成影片... (耗時 {time_str})"
                     elif task.total_steps > 0 and task.step > 0:
                         task.stage = "sampling"
                         task.message = f"⚡ 影片生成中: {task.step}/{task.total_steps} 步 (耗時 {time_str})"
                     elif task.prompt_id in running:
                         task.stage = "preprocessing"
                         task.progress = min(0.95, 0.25 + (elapsed / 1800.0) * 0.70)
-                        task.message = f"⚡ 前處理中 (載入模型與特徵處理)... (耗時 {time_str})"
+                        task.message = f"⚡ 前處理中：正在載入模型... (耗時 {time_str})"
                     elif task.prompt_id in pending:
                         task.stage = "pending"
                         task.progress = 0.18

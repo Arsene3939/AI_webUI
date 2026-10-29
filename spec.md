@@ -115,3 +115,34 @@
      - 若未上傳圖片（如直接提交），安全降級為 16:9 預設值，保證系統不崩潰。
 4. **工作階段恢復相容性 (`restore_device_state`)**：
    - 確保已儲存「原圖比例 (自動對齊)」或舊版比例的會話皆能順暢恢復與正常展示。
+
+## 7. 新增歷史成果庫的生成紀錄刪除按鈕(以單一垃圾桶符號呈現在下拉選單的每個生成紀錄旁邊)
+### 詳細規劃：
+- **後端任務管理器層 (`task_manager.py`)**：
+  - 新增 `delete_task(task_id: str, device_id: Optional[str] = None) -> bool` 方法：
+    - 嚴格隔離機制：僅能刪除屬於當前裝置 (`device_id`) 的任務，防止跨裝置刪除。
+    - 執行緒安全：在 `self._lock` 保護下進行，若任務仍在 `queued` 或 `running` 狀態則先觸發 `cancel_event.set()` 中斷執行。
+    - 磁碟空間清理：若存在已生成影片檔案 (`task.video_path`)，自檔案系統安全刪除以釋放伺服器磁碟空間。
+    - 記憶體與歷史持久化：自 `self._tasks` 字典移除該任務，並呼叫原子寫入方法 `_save_history()` 即時更新 `outputs/task_history.json`。
+- **Gradio 前端與 UI 互動層 (`app.py`)**：
+  - **按鈕視覺配置 (極簡圖示)**：
+    - 依據簡潔 UI 原則，刪除按鈕以單一垃圾桶符號 `🗑️` 呈現 (`gr.Button("🗑️", variant="stop", scale=1, min_width=50)`，與後端停止按鈕 `🛑` 設計一致)。
+    - 緊鄰於「歷史任務下拉選單 (`history_dropdown`)」右側，排列於同一橫列 (`with gr.Row(): refresh_history_btn -> history_dropdown -> delete_history_btn`)。
+  - **刪除回調處理 (`on_delete_history_item`)**：
+    - 接收當前選取的 `selected_task_id` 與瀏覽器裝置 ID (`device_id`)。
+    - 若未選取任務或處於「— 暫無歷史紀錄 —」，安全返回不進行操作。
+    - 呼叫 `task_manager.delete_task(selected_task_id, device_id)` 刪除紀錄與對應影片。
+    - 動態刷新歷史下拉選單：
+      - 若該裝置尚有其他歷史任務，自動選取並載入最新一筆任務（同步更新 `history_dropdown`、`gallery_video`、`gallery_info`）。
+      - 若歷史記錄已被清空，下拉選單重設為 `— 暫無歷史紀錄 —`，影片播放器重設為清空 (`None`)，詳細資訊重設為預設提示。
+  - **文字與提示檢視**：
+    - 保持文字精簡無贅字，按鈕僅標記單一符號 `🗑️`，回饋文字簡要明瞭，不出現開發者技術術語。
+- **自動化測試與驗證規劃**：
+  - 單元測試 (`tests/test_task_manager.py`)：
+    - 測試 `delete_task` 正常刪除已完成任務、清理磁碟影片檔、從記憶體與 JSON 檔案移除。
+    - 測試跨裝置保護（其他 device_id 無法刪除他人的任務）。
+    - 測試刪除不存在的任務安全返回 `False`。
+  - 狀態與 UI 測試 (`tests/test_app_state.py`)：
+    - 測試點擊刪除按鈕後下拉選單選項即時排除該任務，並自動選取下一個任務或回到清空狀態。
+  - E2E 完整測試 (`test_e2e.py` & `run_tests.bat`)：
+    - 驗證使用者於歷史成果庫中刪除生成成果的端到端行為。

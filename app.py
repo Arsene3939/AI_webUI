@@ -351,15 +351,12 @@ def on_resolution_change(ar, quality_str, img_path=None):
                     orig_w, orig_h = im.size
                 w, h = calculate_dimensions_adaptive_ratio(orig_w, orig_h, quality_str, multiple=DEFAULT_MULTIPLE)
                 actual_mp = round((w * h) / 1_000_000, 2)
-                r_orig = orig_w / orig_h
-                r_calc = w / h
-                diff_pct = abs(r_calc - r_orig) / r_orig * 100
-                return f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP) ｜ 💡 *精準對齊原圖 ({orig_w}x{orig_h})，拉伸誤差：{diff_pct:.2f}%*"
+                return f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP)"
             except Exception:
                 pass
         w, h = calculate_dimensions("16:9 (橫向風景)", quality_str, multiple=DEFAULT_MULTIPLE)
         actual_mp = round((w * h) / 1_000_000, 2)
-        return f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP) ｜ 💡 *尚未上傳圖片，上傳後將自動對齊原圖比例*"
+        return f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP)"
 
     ar = normalize_aspect_ratio(ar, allow_original=False)
     w, h = calculate_dimensions(ar, quality_str, multiple=DEFAULT_MULTIPLE)
@@ -370,19 +367,18 @@ def on_resolution_change(ar, quality_str, img_path=None):
 def on_first_frame_change(img_path, current_quality_str):
     """Detects uploaded image dimensions and automatically aligns to distortion-free original aspect ratio."""
     if not img_path or not os.path.exists(img_path):
-        return gr.update(), "📐 **輸出解析度**：尚未上傳圖片", ""
+        w, h = calculate_dimensions("16:9 (橫向風景)", current_quality_str, multiple=DEFAULT_MULTIPLE)
+        actual_mp = round((w * h) / 1_000_000, 2)
+        return gr.update(), f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP)", ""
     try:
         current_quality_str = normalize_quality_choice(current_quality_str)
         with Image.open(img_path) as im:
             orig_w, orig_h = im.size
-        r_orig = orig_w / orig_h
         w, h = calculate_dimensions_adaptive_ratio(orig_w, orig_h, current_quality_str, multiple=DEFAULT_MULTIPLE)
         actual_mp = round((w * h) / 1_000_000, 2)
-        r_calc = w / h
-        diff_pct = abs(r_calc - r_orig) / r_orig * 100
 
-        info_text = f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP) ｜ 💡 *精準對齊原圖 ({orig_w}x{orig_h})，拉伸誤差：{diff_pct:.2f}%*"
-        badge_text = f"💡 *偵測到原始尺寸：`{orig_w} x {orig_h}` (比例 {r_orig:.2f})，已自動對齊無畸變輸出尺寸，拉伸誤差：{diff_pct:.2f}%*"
+        info_text = f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP)"
+        badge_text = f"💡 *原始尺寸：`{orig_w} x {orig_h}`*"
         return gr.update(value=ORIGINAL_RATIO_LABEL), info_text, badge_text
     except Exception as e:
         return gr.update(), gr.update(), f"⚠️ 圖片解析度偵測失敗: {str(e)}"
@@ -435,6 +431,23 @@ def on_select_history_item(selected_task_id, device_id):
     ```
     """
     return task.video_path, info_md
+
+
+def on_delete_history_item(selected_task_id, device_id):
+    """Deletes the selected historical task, cleans up storage, and refreshes the gallery."""
+    if not selected_task_id:
+        choices = get_history_dropdown_choices(device_id)
+        return gr.update(choices=choices), None, "選擇上方任務查看詳細資訊與播放。"
+
+    task_manager.delete_task(selected_task_id, device_id=device_id)
+    choices = get_history_dropdown_choices(device_id)
+    new_value = choices[0][1] if choices and choices[0][1] else ""
+
+    if new_value:
+        new_video, new_info = on_select_history_item(new_value, device_id)
+        return gr.update(choices=choices, value=new_value), new_video, new_info
+    else:
+        return gr.update(choices=choices, value=""), None, "選擇上方任務查看詳細資訊與播放。"
 
 
 # --- Generation Handlers with Input Archiving & Device Isolation ---
@@ -499,7 +512,7 @@ def handle_i2v_generate(
         yield build_progress_html(f"❌ 上傳圖片失敗: 檢查後端是否已啟動({str(e)}"), None, current_session_task, device_id
         return
 
-    yield build_progress_html("⚡ 前處理中：正在編譯工作流..."), None, current_session_task, device_id
+    yield build_progress_html("⚡ 前處理中：正在準備生成..."), None, current_session_task, device_id
 
     # Task 4: Workflow strictly uses server-side configured models (DEFAULT_UNET, DEFAULT_CLIP, etc.)
     prompt_graph = build_i2v_workflow(
@@ -594,7 +607,7 @@ def handle_t2v_generate(
     # Task 3 & 6: Width and height for T2V are calculated from Aspect Ratio and Quality Level (MP)
     w, h = calculate_dimensions(aspect_ratio, quality_level, multiple=DEFAULT_MULTIPLE)
 
-    yield build_progress_html("⚡ 前處理中：正在準備生成任務..."), None, current_session_task, device_id
+    yield build_progress_html("⚡ 前處理中：正在準備生成..."), None, current_session_task, device_id
 
     logger.info("[T2V] Request from device '%s': size=%dx%d, steps=%s, seed=%s, duration=%ss, prompt='%s'",
                 device_id, w, h, steps, seed, duration, prompt[:50])
@@ -725,7 +738,7 @@ def handle_r2v_generate(
             yield build_progress_html(f"❌ 上傳參考音訊失敗: {str(e)}"), None, current_session_task, device_id
             return
 
-    yield build_progress_html("⚡ 前處理中：正在編譯工作流..."), None, current_session_task, device_id
+    yield build_progress_html("⚡ 前處理中：正在準備生成..."), None, current_session_task, device_id
 
     # Task 4: Workflow strictly uses server-side configured models
     prompt_graph = build_r2v_workflow(
@@ -1037,8 +1050,8 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
 
     with gr.Row(visible=False) as edit_id_row:
         manual_id_input = gr.Textbox(
-            label="手動指定裝置 ID (可找回該裝置歷史記錄)",
-            placeholder="請輸入 6 位數 ID (例如 71c8f5) 或完整 ID...",
+            label="切換裝置 ID",
+            placeholder="請輸入 6 位數代碼 (例如 71c8f5)...",
             scale=5,
         )
         save_id_btn = gr.Button("確認切換", variant="primary", scale=1)
@@ -1128,7 +1141,7 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                             scale=3,
                             filterable=False,
                         )
-                        i2v_res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP) ｜ 💡 *尚未上傳圖片，上傳後將自動對齊原圖比例*", scale=3)
+                        i2v_res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP)", scale=3)
 
                     # Row 2: Duration, Seed, Random (Spec 4)
                     with gr.Row():
@@ -1299,7 +1312,7 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                             scale=3,
                             filterable=False,
                         )
-                        r2v_res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP) ｜ 💡 *尚未上傳圖片，上傳後將自動對齊原圖比例*", scale=3)
+                        r2v_res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP)", scale=3)
 
                     # Row 2: Duration, Seed, Random (Spec 4)
                     with gr.Row():
@@ -1353,7 +1366,7 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
         with gr.Tab("📁 歷史成果庫"):
             gr.Markdown("### 🗄️ 歷史生成記錄")
             with gr.Row():
-                refresh_history_btn = gr.Button("🔄 重新整理", variant="secondary", scale=1)
+                refresh_history_btn = gr.Button("🔄 重新整理", variant="secondary", scale=2)
                 # Spec 5: Strictly a dropdown without combobox / textbox degradation
                 history_dropdown = gr.Dropdown(
                     choices=[("— 暫無歷史紀錄 —", "")],
@@ -1362,8 +1375,9 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                     allow_custom_value=False,
                     filterable=False,
                     interactive=True,
-                    scale=4
+                    scale=8,
                 )
+                delete_history_btn = gr.Button("🗑️", variant="stop", scale=1, min_width=50)
             with gr.Row():
                 with gr.Column(scale=1):
                     gallery_video = gr.Video(label="歷史影片", autoplay=False)
@@ -1379,6 +1393,11 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                 on_select_history_item,
                 inputs=[history_dropdown, device_id_state],
                 outputs=[gallery_video, gallery_info]
+            )
+            delete_history_btn.click(
+                on_delete_history_item,
+                inputs=[history_dropdown, device_id_state],
+                outputs=[history_dropdown, gallery_video, gallery_info]
             )
 
     # All outputs collected for full restore (49 components exact match)

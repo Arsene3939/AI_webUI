@@ -276,6 +276,38 @@ class TestStateRestoration:
         assert vid_path_blocked is None
         assert "找不到該影片檔案" in info_md_blocked
 
+    def test_on_delete_history_item(self, tmp_path):
+        """Tests deleting a history item via UI callback updates dropdown choices and gallery (Spec Task 7)."""
+        from app import on_delete_history_item, on_select_history_item
+        dev = "dev_delete_ui_test"
+
+        v1 = tmp_path / "v1.mp4"
+        v1.write_bytes(b"v1")
+        t1 = task_manager.create_task("T2V", "Video 1 to keep", {}, device_id=dev)
+        t1.status = "completed"
+        t1.video_path = str(v1)
+
+        v2 = tmp_path / "v2.mp4"
+        v2.write_bytes(b"v2")
+        t2 = task_manager.create_task("T2V", "Video 2 to delete", {}, device_id=dev)
+        t2.status = "completed"
+        t2.video_path = str(v2)
+
+        # Delete t2
+        updated_dropdown, new_video, new_info = on_delete_history_item(t2.task_id, device_id=dev)
+        choices = updated_dropdown.get("choices") if isinstance(updated_dropdown, dict) else getattr(updated_dropdown, "choices", [])
+
+        # t2 is gone, t1 remains
+        assert not any(t2.task_id in str(c) for c in choices)
+        assert any(t1.task_id in str(c) for c in choices)
+        assert new_video == str(v1)
+
+        # Now delete t1 (last remaining)
+        updated_dropdown_empty, empty_video, empty_info = on_delete_history_item(t1.task_id, device_id=dev)
+        choices_empty = updated_dropdown_empty.get("choices") if isinstance(updated_dropdown_empty, dict) else getattr(updated_dropdown_empty, "choices", [])
+        assert any("暫無歷史紀錄" in str(c) for c in choices_empty)
+        assert empty_video is None
+
     def test_browser_state_persistent_secret(self):
         """
         Tests that BrowserState uses a persistent secret key across restarts,
@@ -325,12 +357,12 @@ class TestStateRestoration:
         t_pre.stage = "preprocessing"
         t_pre.step = 0
         t_pre.total_steps = 0
-        t_pre.message = "⚡ 前處理中 (載入模型與特徵處理)... (耗時 12秒)"
+        t_pre.message = "⚡ 前處理中：正在載入模型... (耗時 12秒)"
 
         html_pre = build_progress_html(t_pre)
         assert "0%" in html_pre
         assert "width: 0%" in html_pre
-        assert "⚡ 前處理中 (載入模型與特徵處理)... (耗時 12秒)" in html_pre
+        assert "⚡ 前處理中：正在載入模型... (耗時 12秒)" in html_pre
 
         # 5. Postprocessing task (100% with post-processing status message displayed above bar)
         t_post = Task("task_prog_4", "I2V", "prompt", {}, device_id="dev_prog")
@@ -338,12 +370,12 @@ class TestStateRestoration:
         t_post.stage = "postprocessing"
         t_post.step = 20
         t_post.total_steps = 20
-        t_post.message = "⚡ 後處理中 (解碼與合成影片)... (耗時 1分15秒)"
+        t_post.message = "⚡ 後處理中：正在合成影片... (耗時 1分15秒)"
 
         html_post = build_progress_html(t_post)
         assert "100%" in html_post
         assert "width: 100%" in html_post
-        assert "⚡ 後處理中 (解碼與合成影片)... (耗時 1分15秒)" in html_post
+        assert "⚡ 後處理中：正在合成影片... (耗時 1分15秒)" in html_post
 
         # 6. Verify 2 lines of vertical space allocated (Spec 10)
         assert "min-height: 2.7em" in html_post
@@ -475,7 +507,7 @@ class TestStateRestoration:
         ar_val = ar_up.get("value") if isinstance(ar_up, dict) else getattr(ar_up, "value", None)
         assert ar_val == ORIGINAL_RATIO_LABEL
         assert "1248 x 832" in res_info
-        assert "拉伸誤差：0.00%" in badge or "0.00%" in res_info
+        assert "原始尺寸：`1500 x 1000`" in badge
 
         # 2. Test on_resolution_change with ORIGINAL_RATIO_LABEL and img_file
         res_info_changed = app.on_resolution_change(ORIGINAL_RATIO_LABEL, "5 (1.0 MP - 標準推薦)", img_path=str(img_file))
@@ -483,7 +515,7 @@ class TestStateRestoration:
 
         # 3. Test on_resolution_change without image gracefully falls back
         res_info_no_img = app.on_resolution_change(ORIGINAL_RATIO_LABEL, "5 (1.0 MP - 標準推薦)", img_path=None)
-        assert "尚未上傳圖片" in res_info_no_img
+        assert "1344 x 736" in res_info_no_img
 
     def test_launch_webui_port_occupied_diagnosis(self, capsys):
         """Tests that launch_webui displays diagnostic guidance and refuses to randomly switch ports (Spec 12)."""
