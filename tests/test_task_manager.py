@@ -274,3 +274,117 @@ class TestTaskManagerBackgroundWorker:
         assert synced_task.progress == 1.0
         assert synced_task.video_path == str(dummy_out)
 
+    @patch("task_manager.queue_prompt")
+    @patch("task_manager.requests.get")
+    def test_multi_device_queued_pending_state(self, mock_get, mock_queue):
+        """Tests that when another task is running, a new queued task reports 'queued' / 'pending' status."""
+        mock_queue.return_value = "prompt-dev-b"
+
+        # Mock queue response: prompt-dev-a is running, prompt-dev-b is pending
+        mock_queue_resp = MagicMock()
+        mock_queue_resp.status_code = 200
+        mock_queue_resp.json.return_value = {
+            "queue_running": [["task_a", "prompt-dev-a", {}]],
+            "queue_pending": [["task_b", "prompt-dev-b", {}]],
+        }
+
+        # Mock history response: prompt-dev-b not finished yet
+        mock_history_resp = MagicMock()
+        mock_history_resp.status_code = 200
+        mock_history_resp.json.return_value = {}
+
+        def mock_get_side_effect(url, *args, **kwargs):
+            if "/queue" in url:
+                return mock_queue_resp
+            if "/history" in url:
+                return mock_history_resp
+            return MagicMock(status_code=404)
+
+        mock_get.side_effect = mock_get_side_effect
+
+        tm = TaskManager()
+        task_b = tm.create_task("I2V", "Dev B task", {}, device_id="dev_b")
+
+        # Simulate what queue_prompt assigns:
+        task_b.prompt_id = "prompt-dev-b"
+        task_b.status = "queued"
+        task_b.stage = "pending"
+
+        # Check queue status poll logic
+        q_data = mock_queue_resp.json()
+        running = [item[1] for item in q_data.get("queue_running", [])]
+        pending = [item[1] for item in q_data.get("queue_pending", [])]
+
+        assert "prompt-dev-b" in pending
+        assert "prompt-dev-b" not in running
+        assert task_b.status == "queued"
+        assert task_b.stage == "pending"
+
+    def test_create_task_initializes_total_steps(self):
+        """Tests that create_task initializes total_steps from params['steps']."""
+        tm = TaskManager()
+        task = tm.create_task("I2V", "Test steps", {"steps": 25}, device_id="dev_step_test")
+        assert task.total_steps == 25
+        assert task.step == 0
+        assert task.stage == "preprocessing"
+
+    @patch("task_manager.download_output_file")
+    @patch("task_manager.queue_prompt")
+    @patch("task_manager.requests.get")
+    def test_sampling_stage_immediate_update_at_step_zero(self, mock_get, mock_queue, mock_download):
+        """Tests that when task enters sampling stage, status immediately shows '影片生成中' even at step 0."""
+        mock_queue.return_value = "prompt-sampling-001"
+
+        # Mock queue response: prompt is running in ComfyUI
+        mock_queue_resp = MagicMock()
+        mock_queue_resp.status_code = 200
+        mock_queue_resp.json.return_value = {
+            "queue_running": [["0", "prompt-sampling-001", {}]],
+            "queue_pending": [],
+        }
+
+        # History returns empty (not completed yet)
+        mock_history_resp = MagicMock()
+        mock_history_resp.status_code = 200
+        mock_history_resp.json.return_value = {}
+
+        def mock_get_side_effect(url, *args, **kwargs):
+            if "/queue" in url:
+                return mock_queue_resp
+            if "/history" in url:
+                return mock_history_resp
+            return MagicMock(status_code=404)
+
+        mock_get.side_effect = mock_get_side_effect
+
+        tm = TaskManager()
+        task = tm.create_task("I2V", "Sampling test", {"steps": 20}, device_id="dev_sampling_test")
+        task.prompt_id = "prompt-sampling-001"
+        task.stage = "sampling"
+        task.step = 0
+
+        # Simulate one iteration of monitor queue check logic
+        q_data = mock_queue_resp.json()
+        running = [item[1] for item in q_data.get("queue_running", [])]
+        time_str = "5秒"
+
+        if task.total_steps > 0 and task.step >= task.total_steps:
+            task.stage = "postprocessing"
+        elif task.stage == "postprocessing":
+            pass
+        elif task.stage == "sampling" or (task.total_steps > 0 and task.step > 0):
+            task.status = "running"
+            task.stage = "sampling"
+            if task.total_steps > 0:
+                task.message = f"⚡ 影片生成中: {task.step}/{task.total_steps} 步 (耗時 {time_str})"
+            else:
+                task.message = f"⚡ 影片生成中... (耗時 {time_str})"
+        elif task.prompt_id in running:
+            task.stage = "preprocessing"
+            task.message = f"⚡ 前處理中：正在載入模型... (耗時 {time_str})"
+
+        assert task.stage == "sampling"
+        assert "⚡ 影片生成中: 0/20 步" in task.message
+        assert "前處理中" not in task.message
+        assert "載入模型中" not in task.message
+

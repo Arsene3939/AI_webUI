@@ -24,7 +24,7 @@ WEBUI_PORT = int(os.environ.get("WEBUI_PORT", "7860"))
 # Server Operation Status Flag
 SERVER_STATUS_OK = "OK"
 SERVER_STATUS_UPDATING = "UPDATING"
-SERVER_STATUS = SERVER_STATUS_UPDATING
+SERVER_STATUS = SERVER_STATUS_OK
 
 def get_server_status() -> str:
     """Returns current server operation status ('OK' or 'UPDATING')."""
@@ -40,7 +40,7 @@ def set_server_status(status: str):
 # Startup System Resource Thresholds (Spec Task 2)
 MIN_STARTUP_RAM_GB = float(os.environ.get("MIN_STARTUP_RAM_GB", "50.0"))
 MAX_STARTUP_GPU_UTIL = float(os.environ.get("MAX_STARTUP_GPU_UTIL", "20.0"))
-MIN_STARTUP_VRAM_GB = float(os.environ.get("MIN_STARTUP_VRAM_GB", "10.0"))
+MIN_STARTUP_VRAM_GB = float(os.environ.get("MIN_STARTUP_VRAM_GB", "9.5"))
 
 # Default Models (MiniMax-H3)
 DEFAULT_UNET = "minimax_h3_fl2va_pruned_int8_convrot.safetensors"

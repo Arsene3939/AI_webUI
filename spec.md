@@ -50,3 +50,74 @@
     - 測試點擊「停止生成」時按鈕與任務狀態的即時中斷與復原。
   - 端到端測試 (`test_e2e.py` & `run_tests.bat`)：
     - 驗證完整使用流程不受阻斷，所有單元測試與 E2E 測試 100% 通過。
+
+## 3. 多裝置佇列併發排隊與 UI 進度狀態即時更新優化 + 伺服器維護旗標
+
+### 問題根因分析：
+1. **Gradio 預設並發限制（WebUI 伺服器層卡塞）**：
+   - Gradio 在未顯式設定 `demo.queue(default_concurrency_limit=None)` 時，其內部 Event Queue 的 `default_concurrency_limit` 預設為 `1`。
+   - 當裝置 B 正在生成影片時，其 generator 佔用了該唯一的並發通道；此時裝置 A 按下「開始生成影片」，請求被卡在 Gradio 伺服器最外層佇列，`handle_i2v_generate` 根本尚未被執行，無法向 ComfyUI 提交 Prompt 與建立 Task，導致裝置 A 前端無法即時顯示「⏳ 排隊中... (已等待 X秒)」。直到裝置 B 完成後，Gradio 才放行裝置 A 執行生成。
+2. **WebSocket progress 廣播事件未過濾 prompt_id**：
+   - ComfyUI 透過 WebSocket 廣播 `progress` 事件時，若未校驗事件資料中的 `prompt_id`，多裝置併發時可能導致取樣步數互相干擾。
+
+### 詳細規劃與改動措施：
+- **Gradio 佇列解除並發限制 (`app.py`)**：
+  - 在定義完 Gradio Blocks 後，顯式呼叫 `demo.queue(default_concurrency_limit=None)`。
+  - 在 `launch_webui()` 函式啟動前確保 queue 設置生效。
+  - 在 I2V、T2V、R2V 生成按鈕的 `.click(...)` 事件監聽器上明確宣告 `concurrency_limit=None`，確保所有連線裝置皆可同時進入 generator 邏輯並發送佇列查詢。
+- **任務狀態與 ComfyUI 佇列即時對齊 (`task_manager.py`)**：
+  - 任務送出 `queue_prompt()` 後，第一時間將狀態設定為 `task.status = "queued"`、`task.stage = "pending"`，進度訊息為 `⏳ 排隊中...`。
+  - 在背景監控迴圈 `_monitor_worker` 輪詢 `/queue` 時，若 `task.prompt_id in pending`，持續設定 `task.status = "queued"`、`task.stage = "pending"`，進度訊息顯示 `⏳ 排隊中... (已等待 {time_str})`。
+  - 在 `_ws_listener` 中增加 `p_id = data.get("prompt_id")` 檢查，若不匹配則略過，杜絕取樣步數跨裝置污染。
+- **伺服器維護/更新中旗標機制 (`config.py` & `app.py`)**：
+  - 在 `config.py` 定義狀態旗標常數與取得/設定函式：
+    - `SERVER_STATUS_OK = "OK"`
+    - `SERVER_STATUS_UPDATING = "UPDATING"`
+    - `get_server_status() -> str`、`set_server_status(status: str)`
+  - 開始修改伺服器前將旗標設為 `UPDATING`，完成後設回 `OK`。
+  - 當旗標為 `UPDATING` 時：
+    - `build_header_html()` 在頁面頂部以醒目樣式呈現 `🔧 伺服器維護/更新中`。
+    - 後端狀態列顯示 `🔧 伺服器維護/更新中`。
+    - 啟動後端按鈕阻斷操作並提示 `⚠️ 伺服器維護/更新中，暫停啟動後端`。
+    - I2V、T2V、R2V 生成按鈕攔截請求並提示 `⚠️ 伺服器維護/更新中，暫停提交生成任務`。
+- **測試驗證**：
+  - 在 `tests/test_task_manager.py` 驗證多裝置佇列 pending 狀態維持與隔離。
+  - 在 `tests/test_app_state.py` 驗證 `UPDATING` 與 `OK` 狀態切換下的 UI 橫幅與生成拒絕/恢復機制。
+  - 運行 79 項單元測試與完整 E2E 測試，保證 100% 通過。
+
+## 4. 前處理結束立即更新為「影片生成中」與伺服器維護旗標使用規範
+
+### 4.1 伺服器維護旗標 (`SERVER_STATUS`) 規範與使用手冊
+- **目的**：
+  - 當管理者或開發者需要對伺服器進行更新、模型替換或代碼維護時，可平滑將 WebUI 切換至維護模式，防止使用者在維護期間發送生成請求導致任務異常或損壞。
+- **旗標定義與介面 (`config.py`)**：
+  - 常數：`SERVER_STATUS_OK = "OK"`, `SERVER_STATUS_UPDATING = "UPDATING"`
+  - 全域變數：`SERVER_STATUS`（預設為 `SERVER_STATUS_OK`）
+  - 介面函式：`get_server_status() -> str`、`set_server_status(status: str) -> None`
+- **使用方式**：
+  1. **代碼/配置檔設定**：
+     - 在修改代碼前，於 `config.py` 將 `SERVER_STATUS = SERVER_STATUS_UPDATING`。
+     - 或在 Python 腳本/控制台中執行：`from config import set_server_status, SERVER_STATUS_UPDATING; set_server_status(SERVER_STATUS_UPDATING)`。
+  2. **環境變數設定**：
+     - 在啟動伺服器前於終端設定：`set SERVER_STATUS=UPDATING`（Windows）或 `export SERVER_STATUS=UPDATING`（Linux）。
+  3. **維護完成後恢復**：
+     - 將 `config.py` 改回 `SERVER_STATUS = SERVER_STATUS_OK`，或調用 `set_server_status(SERVER_STATUS_OK)`，或取消環境變數。
+- **維護模式下的前端表現**：
+  - **頁面橫幅**：WebUI 頂部標題下方呈現紅色高亮醒目警示框 `🔧 伺服器維護/更新中`。
+  - **後端狀態欄**：顯示 `🔧 伺服器維護/更新中`，點擊啟動後端會被安全阻斷並提示 `⚠️ 伺服器維護/更新中，暫停啟動後端`。
+  - **生成按鈕**：I2V、T2V、R2V 分頁按下生成時立即彈出 `⚠️ 伺服器維護/更新中，暫停提交生成任務`，不建立背景任務。
+
+### 4.2 前處理結束立即更新為「影片生成中」詳細規劃
+- **問題分析**：
+  - 先前進度邏輯限定 `task.total_steps > 0 and task.step > 0` 才會判定為 sampling 階段並顯示 `⚡ 影片生成中`。
+  - 由於 ComfyUI 的 WebSocket `progress` 事件僅在算完第 1 步時才會首次發送（第 0 步取樣期間 `step` 仍為 0），且此前 `total_steps` 初始值為 0，導致在取樣器節點剛啟動算第 0 步時，輪詢迴圈將其判定為 `elif task.prompt_id in running:`，並反覆覆蓋為 `task.stage = "preprocessing"` 及 `⚡ 前處理中：正在載入模型...`。
+  - 使用者在前端看到的現象是：進度條必須等跑到 >0% 才會突然跳出「影片生成中」，前處理明明已結束卻長期停留在「載入模型中」。
+- **修正架構**：
+  1. **預先賦予總步數 (`task_manager.create_task`)**：
+     - 建立任務時自傳入參數提取：`task.total_steps = int(saved_params.get("steps", 0))`，確保任務在未連上 WebSocket 前就具備明確的目標步數。
+  2. **節點級取樣識別 (`task_manager._ws_listener`)**：
+     - 傳入 `prompt_graph`，監聽 `executing` 事件中的 node key 與 class type。
+     - 當執行到 `SamplerCustomAdvanced`、`KSampler` 等取樣節點時，立刻將 `task.stage = "sampling"`，並設定 `task.message = f"⚡ 影片生成中: {task.step}/{task.total_steps} 步"`。
+  3. **輪詢邏輯優先維護取樣狀態 (`task_manager._monitor_worker`)**：
+     - 將 `elif task.stage == "sampling" or (task.total_steps > 0 and task.step > 0):` 調至 `elif task.prompt_id in running:` 之前。
+     - 即使 `task.step == 0`，只要 `task.stage == "sampling"`，狀態字串立刻顯示為 `⚡ 影片生成中: 0/{task.total_steps} 步 (耗時 {time_str})`，杜絕被 `preprocessing` 覆蓋。

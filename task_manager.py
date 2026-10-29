@@ -186,6 +186,7 @@ class TaskManager:
                 saved_params[k] = self._archive_file(v, task_id, k)
 
         task = Task(task_id, task_type, prompt, saved_params, device_id=device_id)
+        task.total_steps = int(saved_params.get("steps", 0))
         task.stage = "preprocessing"
         task.message = "⚡ 前處理中：正在準備提交任務..."
         with self._lock:
@@ -403,7 +404,7 @@ class TaskManager:
         )
         thread.start()
 
-    def _ws_listener(self, ws_url: str, client_id: str, prompt_id: str, task: Task, stop_event: threading.Event):
+    def _ws_listener(self, ws_url: str, client_id: str, prompt_id: str, task: Task, prompt_graph: Optional[Dict[str, Any]], stop_event: threading.Event):
         """Listens to ComfyUI websocket for real-time progress steps and executing node names."""
         async def listen():
             full_ws = f"{ws_url}/ws?clientId={client_id}"
@@ -420,6 +421,9 @@ class TaskManager:
                             etype = event.get("type")
                             data = event.get("data", {})
                             if etype == "progress":
+                                p_id = data.get("prompt_id")
+                                if p_id and p_id != prompt_id:
+                                    continue
                                 v = data.get("value", 0)
                                 m = data.get("max", 1)
                                 if m > 0:
@@ -438,11 +442,18 @@ class TaskManager:
                                         task.stage = "completed"
                                     else:
                                         task.current_node = str(node)
-                                        node_str = str(node).lower()
-                                        if any(k in node_str for k in ["vae_decode", "create_video", "save_video"]):
+                                        node_key = str(node)
+                                        node_info = prompt_graph.get(node_key, {}) if prompt_graph else {}
+                                        class_type = str(node_info.get("class_type", "")).lower()
+                                        node_str = f"{node_key} {class_type}".lower()
+                                        if any(k in node_str for k in ["vae_decode", "vaedecode", "create_video", "createvideo", "save_video", "savevideo"]):
                                             task.stage = "postprocessing"
-                                        elif any(k in node_str for k in ["sampler", "sampling"]):
+                                        elif any(k in node_str for k in ["sampler", "sampling", "ksampler"]):
                                             task.stage = "sampling"
+                                            if task.total_steps > 0:
+                                                task.message = f"⚡ 影片生成中: {task.step}/{task.total_steps} 步"
+                                            else:
+                                                task.message = "⚡ 影片生成中..."
                                         elif task.stage not in ("sampling", "postprocessing"):
                                             task.stage = "preprocessing"
             except Exception as e:
@@ -475,6 +486,8 @@ class TaskManager:
                 return
             prompt_id = queue_prompt(prompt_graph, client_id, server_url)
             task.prompt_id = prompt_id
+            task.status = "queued"
+            task.stage = "pending"
             task.message = "⏳ 排隊中..."
             task.progress = 0.15
             logger.info("[Task %s] Prompt queued successfully! Assigned ComfyUI prompt_id: %s", task.task_id, prompt_id)
@@ -494,7 +507,7 @@ class TaskManager:
         ws_url = server_url.replace("http://", "ws://").replace("https://", "wss://")
         ws_thread = threading.Thread(
             target=self._ws_listener,
-            args=(ws_url, client_id, task.prompt_id, task, stop_ws),
+            args=(ws_url, client_id, task.prompt_id, task, prompt_graph, stop_ws),
             daemon=True,
         )
         ws_thread.start()
@@ -589,18 +602,26 @@ class TaskManager:
                     pending = [item[1] for item in q_data.get("queue_pending", [])]
 
                     if task.total_steps > 0 and task.step >= task.total_steps:
+                        task.status = "running"
                         task.stage = "postprocessing"
                         task.message = f"⚡ 後處理中：正在合成影片... (耗時 {time_str})"
                     elif task.stage == "postprocessing":
+                        task.status = "running"
                         task.message = f"⚡ 後處理中：正在合成影片... (耗時 {time_str})"
-                    elif task.total_steps > 0 and task.step > 0:
+                    elif task.stage == "sampling" or (task.total_steps > 0 and task.step > 0):
+                        task.status = "running"
                         task.stage = "sampling"
-                        task.message = f"⚡ 影片生成中: {task.step}/{task.total_steps} 步 (耗時 {time_str})"
+                        if task.total_steps > 0:
+                            task.message = f"⚡ 影片生成中: {task.step}/{task.total_steps} 步 (耗時 {time_str})"
+                        else:
+                            task.message = f"⚡ 影片生成中... (耗時 {time_str})"
                     elif task.prompt_id in running:
+                        task.status = "running"
                         task.stage = "preprocessing"
                         task.progress = min(0.95, 0.25 + (elapsed / 1800.0) * 0.70)
                         task.message = f"⚡ 前處理中：正在載入模型... (耗時 {time_str})"
                     elif task.prompt_id in pending:
+                        task.status = "queued"
                         task.stage = "pending"
                         task.progress = 0.18
                         task.message = f"⏳ 排隊中... (已等待 {time_str})"

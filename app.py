@@ -13,6 +13,10 @@ from config import (
     COMFY_SERVER_URL,
     WEBUI_HOST,
     WEBUI_PORT,
+    SERVER_STATUS_OK,
+    SERVER_STATUS_UPDATING,
+    get_server_status,
+    set_server_status,
     DEFAULT_UNET,
     DEFAULT_CLIP,
     DEFAULT_VIDEO_VAE,
@@ -274,6 +278,16 @@ server_ok, server_status_msg = check_server(COMFY_SERVER_URL)
 
 
 def build_header_html(device_id=None):
+    status_banner = ""
+    if get_server_status() == SERVER_STATUS_UPDATING:
+        status_banner = (
+            '<div style="margin-top: 8px; padding: 6px 14px; background: #fff1f2; '
+            'border: 1.5px solid #fda4af; border-radius: 6px; color: #e11d48; '
+            'font-weight: 700; font-size: 0.95rem; text-align: center;">'
+            '🔧 伺服器維護/更新中'
+            '</div>'
+        )
+
     if device_id:
         short_hash = device_id.split("_")[-1][:6]
         dev_str = (
@@ -291,6 +305,7 @@ def build_header_html(device_id=None):
             📱 <b>手機內網連線網址：</b> <span class="ip-badge">http://{lan_ip}:{WEBUI_PORT}</span>
             {dev_str}
         </div>
+        {status_banner}
     </div>
     """
 
@@ -493,6 +508,10 @@ def handle_i2v_generate(
     if not device_id:
         device_id = f"dev_{uuid.uuid4().hex[:6]}"
 
+    if get_server_status() == SERVER_STATUS_UPDATING:
+        yield build_progress_html("⚠️ 伺服器維護/更新中，暫停提交生成任務"), None, current_session_task, device_id
+        return
+
     if not first_frame:
         yield build_progress_html("❌ 請上傳首幀圖片"), None, current_session_task, device_id
         return
@@ -597,6 +616,10 @@ def handle_t2v_generate(
     if not device_id:
         device_id = f"dev_{uuid.uuid4().hex[:6]}"
 
+    if get_server_status() == SERVER_STATUS_UPDATING:
+        yield build_progress_html("⚠️ 伺服器維護/更新中，暫停提交生成任務"), None, current_session_task, device_id
+        return
+
     if not prompt or not prompt.strip():
         yield build_progress_html("❌ 請輸入提示詞"), None, current_session_task, device_id
         return
@@ -691,6 +714,10 @@ def handle_r2v_generate(
 ):
     if not device_id:
         device_id = f"dev_{uuid.uuid4().hex[:6]}"
+
+    if get_server_status() == SERVER_STATUS_UPDATING:
+        yield build_progress_html("⚠️ 伺服器維護/更新中，暫停提交生成任務"), None, current_session_task, device_id
+        return
 
     if not prompt or not prompt.strip():
         yield build_progress_html("❌ 請輸入提示詞"), None, current_session_task, device_id
@@ -1112,6 +1139,8 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
     _is_backend_starting = False
 
     def poll_backend_status():
+        if get_server_status() == SERVER_STATUS_UPDATING:
+            return gr.update(value="🔧 伺服器維護/更新中", variant="stop")
         if _is_backend_starting:
             return gr.update(value="🟡 正在啟動後端模型...", variant="secondary")
         ok, _ = check_server(COMFY_SERVER_URL)
@@ -1124,6 +1153,9 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
 
     def on_start_backend():
         global _is_backend_starting
+        if get_server_status() == SERVER_STATUS_UPDATING:
+            yield gr.update(value="🔧 伺服器維護/更新中", variant="stop"), "⚠️ 伺服器維護/更新中，暫停啟動後端"
+            return
         ok, _ = check_server(COMFY_SERVER_URL)
         if ok:
             yield gr.update(value="🟢 後端模型運作中", variant="primary"), "🟢 後端模型已經在運作中，無須重複啟動"
@@ -1239,7 +1271,8 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                     i2v_steps, i2v_denoise, i2v_sampler, i2v_scheduler, i2v_fps,
                     session_task_state, device_id_state
                 ],
-                outputs=[i2v_status, i2v_output_video, session_task_state, device_id_state]
+                outputs=[i2v_status, i2v_output_video, session_task_state, device_id_state],
+                concurrency_limit=None,
             ).then(
                 lambda: (gr.update(visible=True), gr.update(visible=False)),
                 outputs=[i2v_btn, i2v_stop_btn],
@@ -1327,7 +1360,8 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                     t2v_steps, t2v_denoise, t2v_sampler, t2v_scheduler, t2v_fps,
                     session_task_state, device_id_state
                 ],
-                outputs=[t2v_status, t2v_output_video, session_task_state, device_id_state]
+                outputs=[t2v_status, t2v_output_video, session_task_state, device_id_state],
+                concurrency_limit=None,
             ).then(
                 lambda: (gr.update(visible=True), gr.update(visible=False)),
                 outputs=[t2v_btn, t2v_stop_btn],
@@ -1441,7 +1475,8 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                     r2v_steps, r2v_denoise, r2v_sampler, r2v_scheduler, r2v_fps,
                     session_task_state, device_id_state
                 ],
-                outputs=[r2v_status, r2v_output_video, session_task_state, device_id_state]
+                outputs=[r2v_status, r2v_output_video, session_task_state, device_id_state],
+                concurrency_limit=None,
             ).then(
                 lambda: (gr.update(visible=True), gr.update(visible=False)),
                 outputs=[r2v_btn, r2v_stop_btn],
@@ -1569,6 +1604,8 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
         outputs=[edit_id_row, *all_restored_outputs],
     )
 
+demo.queue(default_concurrency_limit=None)
+
 def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
     """Checks whether a local TCP port is already bound."""
     import socket
@@ -1693,6 +1730,7 @@ def launch_webui(port: int = WEBUI_PORT, raise_on_error: bool = False, **launch_
     }
     kwargs.update(launch_kwargs)
     try:
+        demo.queue(default_concurrency_limit=None)
         return demo.launch(**kwargs)
     except OSError as e:
         if "Cannot find empty port" in str(e) or "10048" in str(e):

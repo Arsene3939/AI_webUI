@@ -562,3 +562,48 @@ class TestStateRestoration:
         finally:
             sock.close()
 
+    def test_server_status_flag_maintenance_and_ok(self):
+        """Tests that SERVER_STATUS_UPDATING shows maintenance banner and pauses generation, while OK restores it."""
+        from config import SERVER_STATUS_OK, SERVER_STATUS_UPDATING, set_server_status, get_server_status
+        from app import build_header_html, handle_i2v_generate
+
+        try:
+            # 1. Test UPDATING status
+            set_server_status(SERVER_STATUS_UPDATING)
+            assert get_server_status() == SERVER_STATUS_UPDATING
+
+            # Header displays maintenance banner
+            header_updating = build_header_html("dev_test_status")
+            assert "🔧 伺服器維護/更新中" in header_updating
+
+            # Generation yields maintenance warning and stops
+            gen_res = list(handle_i2v_generate(
+                first_frame="dummy.png",
+                last_frame=None,
+                prompt="Test prompt",
+                aspect_ratio="16:9 (橫向風景)",
+                quality_level="5 (1.0 MP - 標準推薦)",
+                duration=2.0,
+                seed=42,
+                steps=20,
+                denoise=1.0,
+                sampler="res_multistep",
+                scheduler="simple",
+                fps=24,
+                current_session_task=None,
+                device_id="dev_test_status",
+            ))
+            assert len(gen_res) == 1
+            status_html, out_video, sess_task, dev_id = gen_res[0]
+            assert "⚠️ 伺服器維護/更新中，暫停提交生成任務" in status_html
+
+            # 2. Test OK status
+            set_server_status(SERVER_STATUS_OK)
+            assert get_server_status() == SERVER_STATUS_OK
+
+            header_ok = build_header_html("dev_test_status")
+            assert "🔧 伺服器維護/更新中" not in header_ok
+
+        finally:
+            set_server_status(SERVER_STATUS_OK)
+

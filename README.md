@@ -17,6 +17,7 @@
 - [📂 專案檔案結構](#-專案檔案結構)
 - [📐 參數規範與計算公式](#-參數規範與計算公式)
 - [🚀 快速啟動指南](#-快速啟動指南)
+- [🔧 伺服器維護與更新旗標 (Server Maintenance Mode)](#-伺服器維護與更新旗標-server-maintenance-mode)
 - [📱 手機行動端連線說明](#-手機行動端連線說明)
 - [🧪 自動化測試與品質保證](#-自動化測試與品質保證)
 
@@ -199,6 +200,42 @@ ComfyUI Backend: http://127.0.0.1:8188
 WebUI 首頁工具列內建後端管理器：
 - **檢查與啟動**：若 ComfyUI 尚未啟動，點擊頂部 **「⚡ 檢查後端模型狀態...」** 按鈕，系統將自動啟動 ComfyUI 背景服務並掛載模型庫。
 - **終止後端**：點擊 **「🛑」** 按鈕可一鍵釋放後端 GPU 記憶體並優雅關閉進程。
+
+---
+
+## 🔧 伺服器維護與更新旗標 (Server Maintenance Mode)
+
+系統內建全域維護狀態控制旗標，讓管理者在進行模型庫更新、代碼部署或除錯時，可隨時將 WebUI 切換至維護模式，防止使用者在維護期間發送生成任務：
+
+### 1. 啟用維護模式 (UPDATING)
+- **方式 A（修改配置檔）**：
+  在 `config.py` 中將旗標修改為：
+  ```python
+  SERVER_STATUS = SERVER_STATUS_UPDATING
+  ```
+- **方式 B（環境變數啟動）**：
+  在啟動 WebUI 前設定環境變數：
+  ```cmd
+  set SERVER_STATUS=UPDATING
+  run.bat
+  ```
+- **方式 C（Python 程式調用）**：
+  ```python
+  from config import set_server_status, SERVER_STATUS_UPDATING
+  set_server_status(SERVER_STATUS_UPDATING)
+  ```
+
+### 2. 維護模式下的系統行為
+- **醒目警示橫幅**：WebUI 頁面頂部以紅色背景高亮顯示 `🔧 伺服器維護/更新中`。
+- **後端狀態同步**：狀態列即時顯示 `🔧 伺服器維護/更新中`，點擊啟動按鈕會安全攔截並提示 `⚠️ 伺服器維護/更新中，暫停啟動後端`。
+- **安全防護機制**：I2V、T2V、R2V 生成按鈕會主動阻斷任務提交，並顯示 `⚠️ 伺服器維護/更新中，暫停提交生成任務`，防止在維護中產生損毀任務。
+
+### 3. 解除維護模式恢復服務 (OK)
+維護與更新作業完成後，將旗標改回 `SERVER_STATUS_OK`（或移除環境變數）即可瞬間恢復所有功能：
+```python
+from config import set_server_status, SERVER_STATUS_OK
+set_server_status(SERVER_STATUS_OK)
+```
 
 ---
 
