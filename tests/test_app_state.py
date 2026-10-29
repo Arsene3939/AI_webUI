@@ -112,15 +112,15 @@ class TestStateRestoration:
         assert returned_task_id == task.task_id
 
         # The I2V updates start after (device_id, task_id, header, history_dropdown) -> index 4
-        # I2V (16 components):
-        # 4: first_frame, 5: last_frame, 6: prompt, 7: ar, 8: quality_level, 9: w, 10: h,
-        # 11: duration, 12: seed, 13: steps, 14: denoise, 15: fps, 16: sampler, 17: scheduler,
-        # 18: status, 19: output_video
+        # I2V (14 components):
+        # 4: first_frame, 5: last_frame, 6: prompt, 7: ar, 8: quality_level,
+        # 9: duration, 10: seed, 11: steps, 12: denoise, 13: fps, 14: sampler, 15: scheduler,
+        # 16: status, 17: output_video
         i2v_first_frame = ret[4]
         i2v_last_frame = ret[5]
         i2v_prompt = ret[6]
-        i2v_seed = ret[12]
-        i2v_video = ret[19]
+        i2v_seed = ret[10]
+        i2v_video = ret[17]
 
         def extract_val(u):
             return u.get("value") if isinstance(u, dict) else getattr(u, "value", None)
@@ -138,9 +138,7 @@ class TestStateRestoration:
         params = {
             "prompt": "Deep underwater coral reef with luminescent fish",
             "aspect_ratio": "16:9 (橫向風景)",
-            "quality_level": "3 (1.0 MP - 標準推薦)",
-            "custom_w": 1344,
-            "custom_h": 768,
+            "quality_level": "3 (0.6 MP - 流暢體驗)",
             "duration": 3.0,
             "seed": 888,
         }
@@ -154,11 +152,11 @@ class TestStateRestoration:
         def extract_val(u):
             return u.get("value") if isinstance(u, dict) else getattr(u, "value", None)
 
-        # T2V components start at index 4 + 16 = 20
-        # 20: prompt, 21: ar, 22: quality_level, 23: w, 24: h, 25: duration, 26: seed ... 33: video
-        assert extract_val(ret[20]) == "Deep underwater coral reef with luminescent fish"
-        assert extract_val(ret[26]) == 888
-        assert extract_val(ret[33]) == str(dummy_video)
+        # T2V components start at index 4 + 14 = 18
+        # 18: prompt, 19: ar, 20: quality_level, 21: duration, 22: seed ... 29: video
+        assert extract_val(ret[18]) == "Deep underwater coral reef with luminescent fish"
+        assert extract_val(ret[22]) == 888
+        assert extract_val(ret[29]) == str(dummy_video)
 
     def test_restore_state_r2v_task(self, tmp_path):
         """Tests that R2V task inputs and video are restored for the correct device."""
@@ -182,12 +180,12 @@ class TestStateRestoration:
         def extract_val(u):
             return u.get("value") if isinstance(u, dict) else getattr(u, "value", None)
 
-        # R2V components start at index 4 + 16 + 14 = 34
-        # 34: prompt, 35: ref_video, 36: ref_audio, 37..40: img1..4, 41: size,
-        # 42: ar, 43: quality_level, 44: w, 45: h, 46: duration, 47: seed ... 54: video
-        assert extract_val(ret[34]) == "Stylized animation of an ancient temple"
-        assert extract_val(ret[47]) == 999
-        assert extract_val(ret[54]) == str(dummy_video)
+        # R2V components start at index 4 + 14 + 12 = 30
+        # 30: prompt, 31: ref_video, 32: ref_audio, 33..36: img1..4, 37: size,
+        # 38: ar, 39: quality_level, 40: duration, 41: seed ... 48: video
+        assert extract_val(ret[30]) == "Stylized animation of an ancient temple"
+        assert extract_val(ret[41]) == 999
+        assert extract_val(ret[48]) == str(dummy_video)
 
     def test_restore_state_strict_device_isolation(self, tmp_path):
         """
@@ -378,7 +376,8 @@ class TestStateRestoration:
 
         # 1. Switch to short 6-digit ID
         res = switch_manual_device_id("71c8f5", None, None)
-        assert len(res) == len(all_restored_outputs) + 1  # 1 (edit_row) + 55 outputs
+        assert len(all_restored_outputs) == 49
+        assert len(res) == len(all_restored_outputs) + 1  # 1 (edit_row) + 49 outputs
         edit_row_update = res[0]
         assigned_id = res[1]
         header_update = res[3]
@@ -393,6 +392,98 @@ class TestStateRestoration:
         assert res_empty[0].get("visible") is False
         assert "value" not in res_empty[0]
         assert res_empty[1] == "dev_current"
+
+    def test_auto_poll_task_progress_completion(self, tmp_path):
+        """Tests that poll_active_task_progress detects background task completion and delivers video (Spec Task 2)."""
+        from app import poll_active_task_progress, _device_last_reported_completed
+
+        dev_id = "test_dev_auto_poll"
+        _device_last_reported_completed.pop(dev_id, None)
+
+        dummy_vid = tmp_path / "polled_video.mp4"
+        dummy_vid.write_bytes(b"dummy_video_bytes")
+
+        # Create running task
+        task = task_manager.create_task("I2V", "A glowing lantern in the dark", {}, device_id=dev_id)
+        task.status = "running"
+        task.step = 10
+        task.total_steps = 20
+
+        # Poll while running
+        res_running = poll_active_task_progress(dev_id, task.task_id)
+        task_id_out, i2v_st, i2v_vid = res_running[0], res_running[1], res_running[2]
+        assert task_id_out == task.task_id
+        # Video is still gr.update() because not completed yet
+        assert i2v_vid.get("value") is None if isinstance(i2v_vid, dict) else True
+
+        # Now simulate task completing in background
+        task.status = "completed"
+        task.video_path = str(dummy_vid)
+        task.message = "✅ 影片生成完成！"
+
+        # Poll should detect completion and deliver video
+        res_done = poll_active_task_progress(dev_id, task.task_id)
+        done_task_id, done_st, done_vid = res_done[0], res_done[1], res_done[2]
+        assert done_task_id == task.task_id
+        assert "✅ 影片生成完成！" in str(done_st)
+        assert done_vid == str(dummy_vid)
+
+        # Subsequent poll tick should be a no-op so video player isn't interrupted
+        res_subsequent = poll_active_task_progress(dev_id, task.task_id)
+        sub_vid = res_subsequent[2]
+        assert sub_vid.get("value") is None if isinstance(sub_vid, dict) else True
+
+    def test_interrupt_task_on_re_generate(self):
+        """Tests that interrupt_device_tasks terminates older task when a new generation starts (Spec Task 1)."""
+        dev_id = "test_dev_preempt"
+        t1 = task_manager.create_task("T2V", "First task", {}, device_id=dev_id)
+        t1.status = "running"
+
+        assert not t1.cancel_event.is_set()
+
+        # Simulate user pressing generate again
+        interrupted = task_manager.interrupt_device_tasks(device_id=dev_id)
+        assert t1.task_id in interrupted
+        assert t1.cancel_event.is_set()
+        assert t1.status == "interrupted"
+        assert "中斷" in t1.message
+
+    def test_no_custom_dimensions_or_models_in_ui(self):
+        """Ensures custom_w, custom_h and model textboxes are not present in UI (Spec Tasks 3 & 4)."""
+        import app
+        # Ensure custom_w, custom_h, unet, clip, video_vae, audio_vae are not defined on app
+        for attr in ["i2v_custom_w", "i2v_custom_h", "t2v_custom_w", "t2v_custom_h", "r2v_custom_w", "r2v_custom_h",
+                     "i2v_unet", "i2v_clip", "i2v_v_vae", "i2v_a_vae"]:
+            assert not hasattr(app, attr), f"app should not define {attr}"
+
+    def test_adaptive_aspect_ratio_ui_logic(self, tmp_path):
+        """Ensures UI supports '原圖比例 (自動對齊)' and accurately aligns without distortion (Spec Task 6)."""
+        import app
+        from config import ORIGINAL_RATIO_LABEL, I2V_ASPECT_RATIOS, T2V_ASPECT_RATIOS
+        from PIL import Image
+
+        assert ORIGINAL_RATIO_LABEL in I2V_ASPECT_RATIOS
+        assert ORIGINAL_RATIO_LABEL not in T2V_ASPECT_RATIOS
+
+        # Create a test 3:2 image (1500 x 1000)
+        img_file = tmp_path / "test_3_2.png"
+        im = Image.new("RGB", (1500, 1000), color=(100, 150, 200))
+        im.save(img_file)
+
+        # 1. Test on_first_frame_change triggers ORIGINAL_RATIO_LABEL and calculates 1248 x 832
+        ar_up, res_info, badge = app.on_first_frame_change(str(img_file), "5 (1.0 MP - 標準推薦)")
+        ar_val = ar_up.get("value") if isinstance(ar_up, dict) else getattr(ar_up, "value", None)
+        assert ar_val == ORIGINAL_RATIO_LABEL
+        assert "1248 x 832" in res_info
+        assert "拉伸誤差：0.00%" in badge or "0.00%" in res_info
+
+        # 2. Test on_resolution_change with ORIGINAL_RATIO_LABEL and img_file
+        res_info_changed = app.on_resolution_change(ORIGINAL_RATIO_LABEL, "5 (1.0 MP - 標準推薦)", img_path=str(img_file))
+        assert "1248 x 832" in res_info_changed
+
+        # 3. Test on_resolution_change without image gracefully falls back
+        res_info_no_img = app.on_resolution_change(ORIGINAL_RATIO_LABEL, "5 (1.0 MP - 標準推薦)", img_path=None)
+        assert "尚未上傳圖片" in res_info_no_img
 
     def test_launch_webui_port_occupied_diagnosis(self, capsys):
         """Tests that launch_webui displays diagnostic guidance and refuses to randomly switch ports (Spec 12)."""

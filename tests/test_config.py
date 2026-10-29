@@ -153,6 +153,57 @@ class TestResolutionAndAspectRatio:
                     assert h % mult == 0, f"Height {h} not divisible by {mult}"
                     assert w > 0 and h > 0
 
+    def test_calculate_dimensions_adaptive_ratio(self):
+        """Tests that adaptive ratio calculates dimensions with minimal distortion and 32-alignment."""
+        from config import calculate_dimensions_adaptive_ratio
+        # 3:2 aspect ratio (1500 x 1000) at 1.0 MP
+        w, h = calculate_dimensions_adaptive_ratio(1500, 1000, target_mp=1.0, multiple=32)
+        assert w % 32 == 0 and h % 32 == 0
+        assert (w, h) == (1248, 832)
+        assert abs((w / h) - 1.5) < 0.001  # Exact 0% aspect ratio distortion
+
+        # 16:9 standard image (1920 x 1080)
+        w, h = calculate_dimensions_adaptive_ratio(1920, 1080, target_mp=1.0, multiple=32)
+        assert w % 32 == 0 and h % 32 == 0
+        assert abs((w / h) - (16 / 9)) < 0.01
+
+        # 9:16 vertical image (1080 x 1920)
+        w, h = calculate_dimensions_adaptive_ratio(1080, 1920, target_mp=1.0, multiple=32)
+        assert w % 32 == 0 and h % 32 == 0
+        assert abs((w / h) - (9 / 16)) < 0.01
+
+    def test_calculate_dimensions_from_image(self):
+        """Tests calculating dimensions directly from image tuple, PIL Image, and file path."""
+        from config import calculate_dimensions_from_image, calculate_dimensions, ORIGINAL_RATIO_LABEL
+        from PIL import Image
+        import tempfile
+        import os
+
+        # From tuple
+        w, h = calculate_dimensions_from_image((1200, 800), quality_level="5 (1.0 MP - 標準推薦)")
+        assert (w, h) == (1248, 832)
+
+        # From PIL Image
+        im = Image.new("RGB", (1000, 700))
+        w, h = calculate_dimensions_from_image(im, quality_level=1.0)
+        assert w % 32 == 0 and h % 32 == 0
+        assert abs((w / h) - (1000 / 700)) < 0.01
+
+        # From file
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            im.save(f.name)
+            temp_path = f.name
+        try:
+            w, h = calculate_dimensions_from_image(temp_path, quality_level=1.0)
+            assert (w, h) == (1280, 896)
+
+            # Test through calculate_dimensions with ORIGINAL_RATIO_LABEL
+            w2, h2 = calculate_dimensions(ORIGINAL_RATIO_LABEL, megapixels=1.0, image_input=temp_path)
+            assert (w2, h2) == (w, h)
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
     def test_find_nearest_aspect_ratio(self):
         """Tests matching arbitrary input image dimensions to closest aspect ratio preset."""
         assert find_nearest_aspect_ratio(1920, 1080) == "16:9 (橫向風景)"
@@ -207,6 +258,11 @@ class TestChoiceNormalizers:
         assert normalize_aspect_ratio("16:9 橫向風景 (1344 x 768)") == "16:9 (橫向風景)"
         assert normalize_aspect_ratio(None) == "16:9 (橫向風景)"
         assert normalize_aspect_ratio("invalid") == "16:9 (橫向風景)"
+        # Original ratio normalization
+        from config import ORIGINAL_RATIO_LABEL
+        assert normalize_aspect_ratio(ORIGINAL_RATIO_LABEL) == ORIGINAL_RATIO_LABEL
+        assert normalize_aspect_ratio("原圖") == ORIGINAL_RATIO_LABEL
+        assert normalize_aspect_ratio("自動") == ORIGINAL_RATIO_LABEL
 
     def test_normalize_sampler_and_scheduler(self):
         """Checks sampler and scheduler fallback normalization."""

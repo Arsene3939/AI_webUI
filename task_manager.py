@@ -56,6 +56,7 @@ class Task:
         self.total_steps: int = 0
         self.stage: str = "preprocessing"
         self.current_node: str = ""
+        self.cancel_event: threading.Event = threading.Event()
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -146,10 +147,16 @@ class TaskManager:
             with self._lock:
                 for t in sorted(self._tasks.values(), key=lambda x: x.created_at, reverse=True)[:100]:
                     items.append(t.to_dict())
-            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            tmp_file = f"{HISTORY_FILE}.{uuid.uuid4().hex[:6]}.tmp"
+            with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump(items, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_file, HISTORY_FILE)
         except Exception:
-            pass
+            if "tmp_file" in locals() and os.path.exists(tmp_file):
+                try:
+                    os.remove(tmp_file)
+                except Exception:
+                    pass
 
     def _archive_file(self, file_path: Optional[str], task_id: str, prefix: str) -> Optional[str]:
         if not file_path or not os.path.exists(file_path):
@@ -196,8 +203,8 @@ class TaskManager:
         if not task or not task.prompt_id:
             return task
 
-        # Already completed and file exists locally
-        if task.status == "completed" and task.video_path and os.path.exists(task.video_path):
+        # Already completed, interrupted or file exists locally
+        if task.status in ("completed", "interrupted"):
             return task
 
         try:
@@ -282,6 +289,59 @@ class TaskManager:
             ]
             return sorted(tasks, key=lambda x: x.created_at, reverse=True)
 
+    def interrupt_device_tasks(self, device_id: Optional[str] = None, server_url: Optional[str] = None) -> List[str]:
+        """
+        Interrupts any queued or running tasks for the specified device (or all devices if None).
+        Immediately notifies ComfyUI to abort the running execution and remove pending prompts.
+        Returns a list of interrupted task_ids.
+        """
+        from comfy_client import interrupt_execution
+        interrupted_ids = []
+        prompts_to_cancel = []
+        with self._lock:
+            for t in self._tasks.values():
+                if t.status in ("queued", "running"):
+                    if not device_id or _is_same_device(t.device_id, device_id):
+                        t.cancel_event.set()
+                        t.status = "interrupted"
+                        t.stage = "interrupted"
+                        t.message = "⚠️ 任務已被新任務中斷"
+                        interrupted_ids.append(t.task_id)
+                        if t.prompt_id:
+                            prompts_to_cancel.append(t.prompt_id)
+
+        # Signal ComfyUI to cancel targeted jobs and perform general interrupt
+        for pid in prompts_to_cancel:
+            interrupt_execution(prompt_id=pid, server_url=server_url)
+        interrupt_execution(server_url=server_url)
+
+        if interrupted_ids:
+            self._save_history()
+            logger.info("Interrupted %d active task(s) for device '%s': %s",
+                        len(interrupted_ids), device_id or "all", interrupted_ids)
+        return interrupted_ids
+
+    def interrupt_task(self, task_id: str, server_url: Optional[str] = None) -> bool:
+        """Interrupts a specific task by task_id."""
+        from comfy_client import interrupt_execution
+        prompt_id = None
+        with self._lock:
+            t = self._tasks.get(task_id)
+            if not t or t.status not in ("queued", "running"):
+                return False
+            t.cancel_event.set()
+            t.status = "interrupted"
+            t.stage = "interrupted"
+            t.message = "⚠️ 任務已被中斷"
+            prompt_id = t.prompt_id
+
+        if prompt_id:
+            interrupt_execution(prompt_id=prompt_id, server_url=server_url)
+        interrupt_execution(server_url=server_url)
+        self._save_history()
+        logger.info("Task %s explicitly interrupted.", task_id)
+        return True
+
     def start_background_task(self, task: Task, prompt_graph: Dict[str, Any], server_url: Optional[str] = None):
         """Starts a detached thread to submit to ComfyUI and monitor progress."""
         server_url = server_url or COMFY_SERVER_URL
@@ -348,6 +408,10 @@ class TaskManager:
             loop.close()
 
     def _monitor_worker(self, task: Task, prompt_graph: Dict[str, Any], server_url: str):
+        if task.cancel_event.is_set() or task.status == "interrupted":
+            logger.info("[Task %s] Interrupted before starting worker.", task.task_id)
+            return
+
         task.status = "running"
         task.stage = "preprocessing"
         task.message = "⚡ 前處理中：正在提交任務至後端..."
@@ -356,12 +420,18 @@ class TaskManager:
 
         client_id = str(uuid.uuid4())
         try:
+            if task.cancel_event.is_set() or task.status == "interrupted":
+                logger.info("[Task %s] Interrupted before queueing prompt.", task.task_id)
+                return
             prompt_id = queue_prompt(prompt_graph, client_id, server_url)
             task.prompt_id = prompt_id
             task.message = f"⏳ 排隊中 (ID: {prompt_id[:8]})..."
             task.progress = 0.15
             logger.info("[Task %s] Prompt queued successfully! Assigned ComfyUI prompt_id: %s", task.task_id, prompt_id)
         except Exception as e:
+            if task.cancel_event.is_set() or task.status == "interrupted":
+                logger.info("[Task %s] Interrupted during prompt submission: %s", task.task_id, e)
+                return
             task.status = "failed"
             task.stage = "failed"
             task.message = f"❌ 提交失敗: {str(e)}"
@@ -384,6 +454,15 @@ class TaskManager:
         last_logged_stage = task.stage
 
         while True:
+            if task.cancel_event.is_set() or task.status == "interrupted":
+                task.status = "interrupted"
+                task.stage = "interrupted"
+                task.message = "⚠️ 任務已被新任務中斷"
+                stop_ws.set()
+                self._save_history()
+                logger.info("[Task %s] Interrupted by newer generation request.", task.task_id)
+                return
+
             elapsed = round(time.time() - start_time, 1)
             task.elapsed = elapsed
 
@@ -477,8 +556,6 @@ class TaskManager:
                         task.message = f"⏳ 排隊中... (已等待 {time_str})"
             except Exception as e:
                 logger.debug("[Task %s] Queue poll exception: %s", task.task_id, e)
-
-            time.sleep(0.5)
 
             time.sleep(0.5)
 

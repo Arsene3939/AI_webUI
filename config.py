@@ -5,9 +5,15 @@ import socket
 import os
 import math
 import re
-from typing import Tuple, Dict, Any, Union
+from typing import Tuple, Dict, Any, Union, Optional
+from PIL import Image
 
 # Server connection
+if "NO_PROXY" not in os.environ:
+    os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+elif "127.0.0.1" not in os.environ["NO_PROXY"]:
+    os.environ["NO_PROXY"] = f"127.0.0.1,localhost,{os.environ['NO_PROXY']}"
+
 COMFY_SERVER_URL = os.environ.get("COMFY_SERVER_URL", "http://127.0.0.1:8188")
 COMFY_WS_URL = COMFY_SERVER_URL.replace("http://", "ws://").replace("https://", "wss://")
 
@@ -22,6 +28,8 @@ DEFAULT_VIDEO_VAE = "minimax_h3_video_vae_fp16.safetensors"
 DEFAULT_AUDIO_VAE = "minimax_h3_audio_vae_fp32.safetensors"
 
 # Aspect Ratios and Megapixels calculation
+ORIGINAL_RATIO_LABEL = "原圖比例 (自動對齊)"
+
 ASPECT_RATIOS: Dict[str, Tuple[int, int]] = {
     "16:9 (橫向風景)": (16, 9),
     "9:16 (直向手機)": (9, 16),
@@ -30,6 +38,27 @@ ASPECT_RATIOS: Dict[str, Tuple[int, int]] = {
     "3:4 (直向比例)": (3, 4),
     "21:9 (超寬電影)": (21, 9),
 }
+
+# Image-based generation choices (I2V, R2V): defaults to auto-aligning original image ratio
+I2V_ASPECT_RATIOS: list[str] = [
+    ORIGINAL_RATIO_LABEL,
+    "16:9 (橫向風景)",
+    "9:16 (直向手機)",
+    "1:1 (正方形)",
+    "4:3 (標準比例)",
+    "3:4 (直向比例)",
+    "21:9 (超寬電影)",
+]
+
+# Text-based generation choices (T2V): standard fixed ratios
+T2V_ASPECT_RATIOS: list[str] = [
+    "16:9 (橫向風景)",
+    "9:16 (直向手機)",
+    "1:1 (正方形)",
+    "4:3 (標準比例)",
+    "3:4 (直向比例)",
+    "21:9 (超寬電影)",
+]
 
 MEGAPIXEL_CHOICES = [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0]
 DEFAULT_MEGAPIXELS = 1.0
@@ -98,18 +127,21 @@ def normalize_quality_choice(val: Any) -> str:
     return DEFAULT_QUALITY_LEVEL
 
 
-def normalize_aspect_ratio(val: Any) -> str:
+def normalize_aspect_ratio(val: Any, default_ar: str = "16:9 (橫向風景)", allow_original: bool = True) -> str:
     """
     Normalizes any aspect ratio string (exact key, prefix, legacy format, or dimension)
-    to a guaranteed valid element of ASPECT_RATIOS.keys().
+    to a guaranteed valid element of ASPECT_RATIOS.keys() or ORIGINAL_RATIO_LABEL.
     """
-    default_ar = "16:9 (橫向風景)"
     if not val:
         return default_ar
 
     val_str = str(val).strip()
 
-    # 1. Exact match
+    # 0. Check for Original Ratio / Auto-alignment label
+    if allow_original and (val_str == ORIGINAL_RATIO_LABEL or "原圖" in val_str or "自動" in val_str):
+        return ORIGINAL_RATIO_LABEL
+
+    # 1. Exact match with standard ratios
     if val_str in ASPECT_RATIOS:
         return val_str
 
@@ -184,15 +216,107 @@ def quality_level_to_mp(level_val: Any) -> float:
     return 1.0
 
 
+def calculate_dimensions_adaptive_ratio(
+    orig_w: int,
+    orig_h: int,
+    target_mp: Any = 1.0,
+    multiple: int = DEFAULT_MULTIPLE,
+) -> Tuple[int, int]:
+    """
+    Given original image width and height, calculates legal video output dimensions (w, h)
+    whose aspect ratio matches orig_w / orig_h with minimal distortion (typically < 0.3% error),
+    while strictly aligning w and h to multiples of `multiple` (default 32) and targeting `target_mp`.
+    """
+    if orig_w <= 0 or orig_h <= 0:
+        return calculate_dimensions("16:9 (橫向風景)", target_mp, multiple)
+
+    r = float(orig_w) / float(orig_h)
+    mp_float = quality_level_to_mp(target_mp)
+    target_area = float(mp_float) * 1_000_000.0
+
+    raw_h = math.sqrt(target_area / r)
+    raw_w = raw_h * r
+
+    base_w_m = round(raw_w / multiple)
+    base_h_m = round(raw_h / multiple)
+
+    best_w, best_h = None, None
+    best_score = float("inf")
+
+    # Grid search across neighboring multiples within +/- 3 steps
+    for dw in range(-3, 4):
+        w = int((base_w_m + dw) * multiple)
+        if w < multiple:
+            continue
+        for dh in range(-3, 4):
+            h = int((base_h_m + dh) * multiple)
+            if h < multiple:
+                continue
+            area = float(w * h)
+            area_err = abs(area - target_area) / target_area
+            # Allow up to 18% variance around the target area to find best aspect match
+            if area_err > 0.18:
+                continue
+            ratio_err = abs((float(w) / float(h)) - r) / r
+            score = ratio_err * 100.0 + area_err
+            if score < best_score:
+                best_score = score
+                best_w, best_h = w, h
+
+    if best_w is None:
+        best_w = max(multiple, int(round(raw_w / multiple) * multiple))
+        best_h = max(multiple, int(round(raw_h / multiple) * multiple))
+
+    return best_w, best_h
+
+
+def calculate_dimensions_from_image(
+    image_input: Any,
+    quality_level: Any = 1.0,
+    multiple: int = DEFAULT_MULTIPLE,
+) -> Tuple[int, int]:
+    """
+    Extracts width and height from an image (filepath, PIL Image, or tuple (w, h)),
+    and returns mathematically optimal, distortion-free output video dimensions.
+    """
+    if not image_input:
+        return calculate_dimensions("16:9 (橫向風景)", quality_level, multiple)
+
+    orig_w, orig_h = None, None
+    if isinstance(image_input, (tuple, list)) and len(image_input) >= 2:
+        orig_w, orig_h = int(image_input[0]), int(image_input[1])
+    elif hasattr(image_input, "size"):  # PIL Image
+        orig_w, orig_h = image_input.size
+    elif isinstance(image_input, str) and os.path.exists(image_input):
+        try:
+            with Image.open(image_input) as im:
+                orig_w, orig_h = im.size
+        except Exception:
+            pass
+
+    if orig_w and orig_h and orig_w > 0 and orig_h > 0:
+        return calculate_dimensions_adaptive_ratio(orig_w, orig_h, quality_level, multiple)
+
+    return calculate_dimensions("16:9 (橫向風景)", quality_level, multiple)
+
+
 def calculate_dimensions(
     aspect_ratio: str,
     megapixels: Any = 1.0,
     multiple: int = DEFAULT_MULTIPLE,
+    image_input: Any = None,
 ) -> Tuple[int, int]:
     """
-    Calculates width and height from aspect ratio string and megapixels (or quality level 1~5),
-    snapping dimensions to the nearest multiple (typically 16 for diffusion models).
+    Calculates width and height from aspect ratio string and megapixels (or quality level 1~10),
+    snapping dimensions to the nearest multiple (typically 32 for MiniMax-H3).
+    If aspect_ratio is '原圖比例 (自動對齊)', extracts image_input dimensions and computes adaptive match.
     """
+    if aspect_ratio == ORIGINAL_RATIO_LABEL or "原圖" in str(aspect_ratio) or "自動" in str(aspect_ratio):
+        if image_input is not None:
+            return calculate_dimensions_from_image(image_input, megapixels, multiple)
+        # If no image provided yet, default to standard 16:9 canvas
+        aspect_ratio = "16:9 (橫向風景)"
+
     ratio_val = None
     for k, (rw, rh) in ASPECT_RATIOS.items():
         if aspect_ratio == k or aspect_ratio.startswith(f"{rw}:{rh}"):

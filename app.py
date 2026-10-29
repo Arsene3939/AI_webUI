@@ -6,6 +6,7 @@ import os
 import time
 import uuid
 import random
+from typing import Dict, Any, Optional, Tuple, List
 from PIL import Image
 import gradio as gr
 from config import (
@@ -18,6 +19,9 @@ from config import (
     DEFAULT_AUDIO_VAE,
     RESOLUTION_PRESETS,
     ASPECT_RATIOS,
+    ORIGINAL_RATIO_LABEL,
+    I2V_ASPECT_RATIOS,
+    T2V_ASPECT_RATIOS,
     MEGAPIXEL_CHOICES,
     DEFAULT_MEGAPIXELS,
     DEFAULT_MULTIPLE,
@@ -26,6 +30,8 @@ from config import (
     OUTPUT_DIR,
     quality_level_to_mp,
     calculate_dimensions,
+    calculate_dimensions_from_image,
+    calculate_dimensions_adaptive_ratio,
     find_nearest_aspect_ratio,
     normalize_quality_choice,
     normalize_aspect_ratio,
@@ -334,33 +340,52 @@ def build_progress_html(task_or_msg) -> str:
     """
 
 
-def on_resolution_change(ar, quality_str):
-    """Calculates width and height when aspect ratio or quality level changes."""
-    ar = normalize_aspect_ratio(ar)
+def on_resolution_change(ar, quality_str, img_path=None):
+    """Calculates resolution label when aspect ratio, quality level, or image changes."""
     quality_str = normalize_quality_choice(quality_str)
+
+    if ar == ORIGINAL_RATIO_LABEL or "原圖" in str(ar) or "自動" in str(ar):
+        if img_path and os.path.exists(img_path):
+            try:
+                with Image.open(img_path) as im:
+                    orig_w, orig_h = im.size
+                w, h = calculate_dimensions_adaptive_ratio(orig_w, orig_h, quality_str, multiple=DEFAULT_MULTIPLE)
+                actual_mp = round((w * h) / 1_000_000, 2)
+                r_orig = orig_w / orig_h
+                r_calc = w / h
+                diff_pct = abs(r_calc - r_orig) / r_orig * 100
+                return f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP) ｜ 💡 *精準對齊原圖 ({orig_w}x{orig_h})，拉伸誤差：{diff_pct:.2f}%*"
+            except Exception:
+                pass
+        w, h = calculate_dimensions("16:9 (橫向風景)", quality_str, multiple=DEFAULT_MULTIPLE)
+        actual_mp = round((w * h) / 1_000_000, 2)
+        return f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP) ｜ 💡 *尚未上傳圖片，上傳後將自動對齊原圖比例*"
+
+    ar = normalize_aspect_ratio(ar, allow_original=False)
     w, h = calculate_dimensions(ar, quality_str, multiple=DEFAULT_MULTIPLE)
     actual_mp = round((w * h) / 1_000_000, 2)
-    info_text = f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP)"
-    return gr.update(value=w), gr.update(value=h), info_text
+    return f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP)"
 
 
 def on_first_frame_change(img_path, current_quality_str):
-    """Detects uploaded image dimensions and automatically selects the closest aspect ratio."""
+    """Detects uploaded image dimensions and automatically aligns to distortion-free original aspect ratio."""
     if not img_path or not os.path.exists(img_path):
-        return gr.update(), gr.update(), gr.update(), gr.update(), ""
+        return gr.update(), "📐 **輸出解析度**：尚未上傳圖片", ""
     try:
         current_quality_str = normalize_quality_choice(current_quality_str)
         with Image.open(img_path) as im:
             orig_w, orig_h = im.size
-        nearest_ar = find_nearest_aspect_ratio(orig_w, orig_h)
-        nearest_ar = normalize_aspect_ratio(nearest_ar)
-        w, h = calculate_dimensions(nearest_ar, current_quality_str, multiple=DEFAULT_MULTIPLE)
+        r_orig = orig_w / orig_h
+        w, h = calculate_dimensions_adaptive_ratio(orig_w, orig_h, current_quality_str, multiple=DEFAULT_MULTIPLE)
         actual_mp = round((w * h) / 1_000_000, 2)
-        info_text = f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP)"
-        badge_text = f"💡 *偵測到原始尺寸：`{orig_w} x {orig_h}`，已自動匹配最接近比例：**{nearest_ar}** *"
-        return gr.update(value=nearest_ar), gr.update(value=w), gr.update(value=h), info_text, badge_text
+        r_calc = w / h
+        diff_pct = abs(r_calc - r_orig) / r_orig * 100
+
+        info_text = f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP) ｜ 💡 *精準對齊原圖 ({orig_w}x{orig_h})，拉伸誤差：{diff_pct:.2f}%*"
+        badge_text = f"💡 *偵測到原始尺寸：`{orig_w} x {orig_h}` (比例 {r_orig:.2f})，已自動對齊無畸變輸出尺寸，拉伸誤差：{diff_pct:.2f}%*"
+        return gr.update(value=ORIGINAL_RATIO_LABEL), info_text, badge_text
     except Exception as e:
-        return gr.update(), gr.update(), gr.update(), gr.update(), f"⚠️ 圖片解析度偵測失敗: {str(e)}"
+        return gr.update(), gr.update(), f"⚠️ 圖片解析度偵測失敗: {str(e)}"
 
 
 def update_resolution(preset_name, current_w, current_h):
@@ -414,14 +439,16 @@ def on_select_history_item(selected_task_id, device_id):
 
 # --- Generation Handlers with Input Archiving & Device Isolation ---
 
+_device_last_reported_completed: Dict[str, str] = {}
+_device_last_status_html: Dict[str, str] = {}
+
+
 def handle_i2v_generate(
     first_frame,
     last_frame,
     prompt,
     aspect_ratio,
     quality_level,
-    custom_w,
-    custom_h,
     duration,
     seed,
     steps,
@@ -429,12 +456,14 @@ def handle_i2v_generate(
     sampler,
     scheduler,
     fps,
-    unet_name,
-    clip_name,
-    video_vae,
-    audio_vae,
     current_session_task,
     device_id,
+    custom_w=None,
+    custom_h=None,
+    unet_name=DEFAULT_UNET,
+    clip_name=DEFAULT_CLIP,
+    video_vae=DEFAULT_VIDEO_VAE,
+    audio_vae=DEFAULT_AUDIO_VAE,
 ):
     if not device_id:
         device_id = f"dev_{uuid.uuid4().hex[:6]}"
@@ -447,14 +476,18 @@ def handle_i2v_generate(
         yield build_progress_html("❌ 請輸入提示詞"), None, current_session_task, device_id
         return
 
+    # Task 1: If there is an active running/queued task for this device, interrupt it immediately!
+    interrupted_ids = task_manager.interrupt_device_tasks(device_id=device_id)
+    if interrupted_ids:
+        logger.info("[I2V] Preempted previous active task(s) for device '%s': %s", device_id, interrupted_ids)
+
     aspect_ratio = normalize_aspect_ratio(aspect_ratio)
     quality_level = normalize_quality_choice(quality_level)
     sampler = normalize_sampler(sampler)
     scheduler = normalize_scheduler(scheduler)
 
-    # Snap to nearest multiple of 32 (Required by MiniMax-H3 VAE 16x downsample + DiT 2x2 patchify)
-    w = max(32, int(round(int(custom_w) / 32) * 32))
-    h = max(32, int(round(int(custom_h) / 32) * 32))
+    # [I2V Dimension Calculation]
+    w, h = calculate_dimensions(aspect_ratio, quality_level, multiple=DEFAULT_MULTIPLE, image_input=first_frame)
 
     logger.info("[I2V] Request from device '%s': size=%dx%d, steps=%s, seed=%s, duration=%ss, prompt='%s'",
                 device_id, w, h, steps, seed, duration, prompt[:50])
@@ -468,6 +501,7 @@ def handle_i2v_generate(
 
     yield build_progress_html("⚡ 前處理中：正在編譯工作流..."), None, current_session_task, device_id
 
+    # Task 4: Workflow strictly uses server-side configured models (DEFAULT_UNET, DEFAULT_CLIP, etc.)
     prompt_graph = build_i2v_workflow(
         prompt=prompt,
         first_frame_filename=first_frame_fn,
@@ -481,10 +515,10 @@ def handle_i2v_generate(
         sampler_name=sampler,
         scheduler_name=scheduler,
         fps=float(fps),
-        unet_name=unet_name,
-        clip_name=clip_name,
-        video_vae_name=video_vae,
-        audio_vae_name=audio_vae,
+        unet_name=DEFAULT_UNET,
+        clip_name=DEFAULT_CLIP,
+        video_vae_name=DEFAULT_VIDEO_VAE,
+        audio_vae_name=DEFAULT_AUDIO_VAE,
     )
 
     # Save full parameters for complete state restoration
@@ -494,8 +528,6 @@ def handle_i2v_generate(
         "prompt": prompt,
         "aspect_ratio": aspect_ratio,
         "quality_level": quality_level,
-        "custom_w": custom_w,
-        "custom_h": custom_h,
         "duration": duration,
         "seed": seed,
         "steps": steps,
@@ -503,10 +535,8 @@ def handle_i2v_generate(
         "sampler": sampler,
         "scheduler": scheduler,
         "fps": fps,
-        "unet_name": unet_name,
-        "clip_name": clip_name,
-        "video_vae": video_vae,
-        "audio_vae": audio_vae,
+        "width": w,
+        "height": h,
     }
 
     task = task_manager.create_task("I2V", prompt, saved_params, device_id=device_id)
@@ -517,7 +547,9 @@ def handle_i2v_generate(
         if not t:
             break
         yield build_progress_html(t), t.video_path, t.task_id, device_id
-        if t.status in ["completed", "failed"]:
+        if t.status in ["completed", "failed", "interrupted"]:
+            if t.status == "completed":
+                _device_last_reported_completed[device_id] = t.task_id
             break
         time.sleep(0.5)
 
@@ -526,8 +558,6 @@ def handle_t2v_generate(
     prompt,
     aspect_ratio,
     quality_level,
-    custom_w,
-    custom_h,
     duration,
     seed,
     steps,
@@ -535,12 +565,14 @@ def handle_t2v_generate(
     sampler,
     scheduler,
     fps,
-    unet_name,
-    clip_name,
-    video_vae,
-    audio_vae,
     current_session_task,
     device_id,
+    custom_w=None,
+    custom_h=None,
+    unet_name=DEFAULT_UNET,
+    clip_name=DEFAULT_CLIP,
+    video_vae=DEFAULT_VIDEO_VAE,
+    audio_vae=DEFAULT_AUDIO_VAE,
 ):
     if not device_id:
         device_id = f"dev_{uuid.uuid4().hex[:6]}"
@@ -549,20 +581,25 @@ def handle_t2v_generate(
         yield build_progress_html("❌ 請輸入提示詞"), None, current_session_task, device_id
         return
 
+    # Task 1: If there is an active running/queued task for this device, interrupt it immediately!
+    interrupted_ids = task_manager.interrupt_device_tasks(device_id=device_id)
+    if interrupted_ids:
+        logger.info("[T2V] Preempted previous active task(s) for device '%s': %s", device_id, interrupted_ids)
+
     aspect_ratio = normalize_aspect_ratio(aspect_ratio)
     quality_level = normalize_quality_choice(quality_level)
     sampler = normalize_sampler(sampler)
     scheduler = normalize_scheduler(scheduler)
 
-    yield build_progress_html("⚡ 前處理中：正在準備生成任務..."), None, current_session_task, device_id
+    # Task 3 & 6: Width and height for T2V are calculated from Aspect Ratio and Quality Level (MP)
+    w, h = calculate_dimensions(aspect_ratio, quality_level, multiple=DEFAULT_MULTIPLE)
 
-    # Snap to nearest multiple of 32 (Required by MiniMax-H3 VAE 16x downsample + DiT 2x2 patchify)
-    w = max(32, int(round(int(custom_w) / 32) * 32))
-    h = max(32, int(round(int(custom_h) / 32) * 32))
+    yield build_progress_html("⚡ 前處理中：正在準備生成任務..."), None, current_session_task, device_id
 
     logger.info("[T2V] Request from device '%s': size=%dx%d, steps=%s, seed=%s, duration=%ss, prompt='%s'",
                 device_id, w, h, steps, seed, duration, prompt[:50])
 
+    # Task 4: Workflow strictly uses server-side configured models
     prompt_graph = build_t2v_workflow(
         prompt=prompt,
         width=int(w),
@@ -574,18 +611,16 @@ def handle_t2v_generate(
         sampler_name=sampler,
         scheduler_name=scheduler,
         fps=float(fps),
-        unet_name=unet_name,
-        clip_name=clip_name,
-        video_vae_name=video_vae,
-        audio_vae_name=audio_vae,
+        unet_name=DEFAULT_UNET,
+        clip_name=DEFAULT_CLIP,
+        video_vae_name=DEFAULT_VIDEO_VAE,
+        audio_vae_name=DEFAULT_AUDIO_VAE,
     )
 
     saved_params = {
         "prompt": prompt,
         "aspect_ratio": aspect_ratio,
         "quality_level": quality_level,
-        "custom_w": custom_w,
-        "custom_h": custom_h,
         "duration": duration,
         "seed": seed,
         "steps": steps,
@@ -593,10 +628,8 @@ def handle_t2v_generate(
         "sampler": sampler,
         "scheduler": scheduler,
         "fps": fps,
-        "unet_name": unet_name,
-        "clip_name": clip_name,
-        "video_vae": video_vae,
-        "audio_vae": audio_vae,
+        "width": w,
+        "height": h,
     }
 
     task = task_manager.create_task("T2V", prompt, saved_params, device_id=device_id)
@@ -607,7 +640,9 @@ def handle_t2v_generate(
         if not t:
             break
         yield build_progress_html(t), t.video_path, t.task_id, device_id
-        if t.status in ["completed", "failed"]:
+        if t.status in ["completed", "failed", "interrupted"]:
+            if t.status == "completed":
+                _device_last_reported_completed[device_id] = t.task_id
             break
         time.sleep(0.5)
 
@@ -623,8 +658,6 @@ def handle_r2v_generate(
     ref_image_size,
     aspect_ratio,
     quality_level,
-    custom_w,
-    custom_h,
     duration,
     seed,
     steps,
@@ -632,12 +665,14 @@ def handle_r2v_generate(
     sampler,
     scheduler,
     fps,
-    unet_name,
-    clip_name,
-    video_vae,
-    audio_vae,
     current_session_task,
     device_id,
+    custom_w=None,
+    custom_h=None,
+    unet_name=DEFAULT_UNET,
+    clip_name=DEFAULT_CLIP,
+    video_vae=DEFAULT_VIDEO_VAE,
+    audio_vae=DEFAULT_AUDIO_VAE,
 ):
     if not device_id:
         device_id = f"dev_{uuid.uuid4().hex[:6]}"
@@ -646,14 +681,18 @@ def handle_r2v_generate(
         yield build_progress_html("❌ 請輸入提示詞"), None, current_session_task, device_id
         return
 
+    # Task 1: If there is an active running/queued task for this device, interrupt it immediately!
+    interrupted_ids = task_manager.interrupt_device_tasks(device_id=device_id)
+    if interrupted_ids:
+        logger.info("[R2V] Preempted previous active task(s) for device '%s': %s", device_id, interrupted_ids)
+
     aspect_ratio = normalize_aspect_ratio(aspect_ratio)
     quality_level = normalize_quality_choice(quality_level)
     sampler = normalize_sampler(sampler)
     scheduler = normalize_scheduler(scheduler)
 
-    # Snap to nearest multiple of 32 (Required by MiniMax-H3 VAE 16x downsample + DiT 2x2 patchify)
-    w = max(32, int(round(int(custom_w) / 32) * 32))
-    h = max(32, int(round(int(custom_h) / 32) * 32))
+    # [R2V Dimension Calculation]
+    w, h = calculate_dimensions(aspect_ratio, quality_level, multiple=DEFAULT_MULTIPLE, image_input=ref_img_1)
 
     logger.info("[R2V] Request from device '%s': size=%dx%d, steps=%s, seed=%s, duration=%ss, prompt='%s'",
                 device_id, w, h, steps, seed, duration, prompt[:50])
@@ -688,6 +727,7 @@ def handle_r2v_generate(
 
     yield build_progress_html("⚡ 前處理中：正在編譯工作流..."), None, current_session_task, device_id
 
+    # Task 4: Workflow strictly uses server-side configured models
     prompt_graph = build_r2v_workflow(
         prompt=prompt,
         ref_image_filenames=ref_img_files,
@@ -703,10 +743,10 @@ def handle_r2v_generate(
         sampler_name=sampler,
         scheduler_name=scheduler,
         fps=float(fps),
-        unet_name=unet_name,
-        clip_name=clip_name,
-        video_vae_name=video_vae,
-        audio_vae_name=audio_vae,
+        unet_name=DEFAULT_UNET,
+        clip_name=DEFAULT_CLIP,
+        video_vae_name=DEFAULT_VIDEO_VAE,
+        audio_vae_name=DEFAULT_AUDIO_VAE,
     )
 
     saved_params = {
@@ -720,8 +760,6 @@ def handle_r2v_generate(
         "ref_image_size": ref_image_size,
         "aspect_ratio": aspect_ratio,
         "quality_level": quality_level,
-        "custom_w": custom_w,
-        "custom_h": custom_h,
         "duration": duration,
         "seed": seed,
         "steps": steps,
@@ -729,10 +767,8 @@ def handle_r2v_generate(
         "sampler": sampler,
         "scheduler": scheduler,
         "fps": fps,
-        "unet_name": unet_name,
-        "clip_name": clip_name,
-        "video_vae": video_vae,
-        "audio_vae": audio_vae,
+        "width": w,
+        "height": h,
     }
 
     task = task_manager.create_task("R2V", prompt, saved_params, device_id=device_id)
@@ -743,7 +779,9 @@ def handle_r2v_generate(
         if not t:
             break
         yield build_progress_html(t), t.video_path, t.task_id, device_id
-        if t.status in ["completed", "failed"]:
+        if t.status in ["completed", "failed", "interrupted"]:
+            if t.status == "completed":
+                _device_last_reported_completed[device_id] = t.task_id
             break
         time.sleep(0.5)
 
@@ -762,10 +800,10 @@ def restore_device_state(stored_device_id, stored_task_id):
     task = task_manager.get_task(stored_task_id, device_id=stored_device_id) or task_manager.get_latest_task_for_device(stored_device_id)
     logger.info("[Session] Device connected/restoring: %s (Active task: %s)", stored_device_id, task.task_id if task else "None")
 
-    # Defaults (Leave untouched if no task)
-    i2v_updates = [gr.update()] * 16
-    t2v_updates = [gr.update()] * 14
-    r2v_updates = [gr.update()] * 21
+    # Defaults (Leave untouched if no task) - I2V: 14, T2V: 12, R2V: 19
+    i2v_updates = [gr.update()] * 14
+    t2v_updates = [gr.update()] * 12
+    r2v_updates = [gr.update()] * 19
     history_choices = get_history_dropdown_choices(stored_device_id)
 
     if task and task.params:
@@ -777,8 +815,6 @@ def restore_device_state(stored_device_id, stored_task_id):
                 gr.update(value=p.get("prompt", task.prompt)),
                 gr.update(value=normalize_aspect_ratio(p.get("aspect_ratio"))),
                 gr.update(value=normalize_quality_choice(p.get("quality_level"))),
-                gr.update(value=p.get("custom_w", 1344)),
-                gr.update(value=p.get("custom_h", 768)),
                 gr.update(value=p.get("duration", 2.0)),
                 gr.update(value=p.get("seed", 1)),
                 gr.update(value=p.get("steps", 20)),
@@ -794,8 +830,6 @@ def restore_device_state(stored_device_id, stored_task_id):
                 gr.update(value=p.get("prompt", task.prompt)),
                 gr.update(value=normalize_aspect_ratio(p.get("aspect_ratio"))),
                 gr.update(value=normalize_quality_choice(p.get("quality_level"))),
-                gr.update(value=p.get("custom_w", 1344)),
-                gr.update(value=p.get("custom_h", 768)),
                 gr.update(value=p.get("duration", 2.0)),
                 gr.update(value=p.get("seed", 1)),
                 gr.update(value=p.get("steps", 20)),
@@ -818,8 +852,6 @@ def restore_device_state(stored_device_id, stored_task_id):
                 gr.update(value=p.get("ref_image_size", "match")),
                 gr.update(value=normalize_aspect_ratio(p.get("aspect_ratio"))),
                 gr.update(value=normalize_quality_choice(p.get("quality_level"))),
-                gr.update(value=p.get("custom_w", 1344)),
-                gr.update(value=p.get("custom_h", 768)),
                 gr.update(value=p.get("duration", 3.0)),
                 gr.update(value=p.get("seed", 1)),
                 gr.update(value=p.get("steps", 20)),
@@ -830,6 +862,11 @@ def restore_device_state(stored_device_id, stored_task_id):
                 gr.update(value=build_progress_html(task)),
                 gr.update(value=task.video_path if task.video_path and os.path.exists(task.video_path) else None),
             ]
+
+    if task and task.status == "completed" and task.video_path and os.path.exists(task.video_path):
+        _device_last_reported_completed[stored_device_id] = task.task_id
+    elif task and task.status in ("running", "queued"):
+        _device_last_reported_completed.pop(stored_device_id, None)
 
     active_task_id = task.task_id if task else stored_task_id
     header = build_header_html(device_id=stored_device_id)
@@ -857,6 +894,126 @@ def switch_manual_device_id(custom_id, current_device_id, session_task_id):
     logger.info("[Session] Device ID manual switch: '%s' -> '%s'", current_device_id, val)
     restored = restore_device_state(val, None)
     return (gr.update(visible=False), *restored)
+
+
+def poll_active_task_progress(stored_device_id, stored_task_id):
+    """
+    Polled periodically by task_poll_timer (Spec Task 2).
+    Automatically detects background task completion or progress for reconnected sessions,
+    and updates progress bar, video player, and history dropdown without requiring manual refresh.
+    """
+    if not stored_device_id:
+        return (
+            gr.update(),
+            gr.update(), gr.update(),
+            gr.update(), gr.update(),
+            gr.update(), gr.update(),
+            gr.update(),
+        )
+
+    task = task_manager.get_task(stored_task_id, device_id=stored_device_id)
+    if not task:
+        task = task_manager.get_latest_task_for_device(stored_device_id)
+
+    if not task:
+        return (
+            gr.update(),
+            gr.update(), gr.update(),
+            gr.update(), gr.update(),
+            gr.update(), gr.update(),
+            gr.update(),
+        )
+
+    # 1. If completed, failed, or interrupted
+    if task.status in ("completed", "failed", "interrupted"):
+        # Check if already pushed to client
+        if _device_last_reported_completed.get(stored_device_id) == task.task_id:
+            return (
+                gr.update(),
+                gr.update(), gr.update(),
+                gr.update(), gr.update(),
+                gr.update(), gr.update(),
+                gr.update(),
+            )
+
+        # Mark as reported so we don't reload player continuously
+        _device_last_reported_completed[stored_device_id] = task.task_id
+        history_choices = get_history_dropdown_choices(stored_device_id)
+        progress_html = build_progress_html(task)
+        video_val = task.video_path if (task.status == "completed" and task.video_path and os.path.exists(task.video_path)) else gr.update()
+
+        if task.task_type == "I2V":
+            return (
+                task.task_id,
+                progress_html, video_val,
+                gr.update(), gr.update(),
+                gr.update(), gr.update(),
+                gr.update(choices=history_choices),
+            )
+        elif task.task_type == "T2V":
+            return (
+                task.task_id,
+                gr.update(), gr.update(),
+                progress_html, video_val,
+                gr.update(), gr.update(),
+                gr.update(choices=history_choices),
+            )
+        elif task.task_type == "R2V":
+            return (
+                task.task_id,
+                gr.update(), gr.update(),
+                gr.update(), gr.update(),
+                progress_html, video_val,
+                gr.update(choices=history_choices),
+            )
+
+    # 2. Task is actively queued or running
+    if task.status in ("queued", "running"):
+        _device_last_reported_completed.pop(stored_device_id, None)
+        progress_html = build_progress_html(task)
+        last_html = _device_last_status_html.get(stored_device_id)
+        if last_html == progress_html:
+            return (
+                gr.update(),
+                gr.update(), gr.update(),
+                gr.update(), gr.update(),
+                gr.update(), gr.update(),
+                gr.update(),
+            )
+        _device_last_status_html[stored_device_id] = progress_html
+
+        if task.task_type == "I2V":
+            return (
+                task.task_id,
+                progress_html, gr.update(),
+                gr.update(), gr.update(),
+                gr.update(), gr.update(),
+                gr.update(),
+            )
+        elif task.task_type == "T2V":
+            return (
+                task.task_id,
+                gr.update(), gr.update(),
+                progress_html, gr.update(),
+                gr.update(), gr.update(),
+                gr.update(),
+            )
+        elif task.task_type == "R2V":
+            return (
+                task.task_id,
+                gr.update(), gr.update(),
+                gr.update(), gr.update(),
+                progress_html, gr.update(),
+                gr.update(),
+            )
+
+    return (
+        gr.update(),
+        gr.update(), gr.update(),
+        gr.update(), gr.update(),
+        gr.update(), gr.update(),
+        gr.update(),
+    )
 
 
 # --- UI Definition ---
@@ -958,8 +1115,8 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                     # Row 1: Aspect Ratio, Quality Level (1~10)
                     with gr.Row():
                         i2v_aspect_ratio = gr.Dropdown(
-                            choices=list(ASPECT_RATIOS.keys()),
-                            value="16:9 (橫向風景)",
+                            choices=I2V_ASPECT_RATIOS,
+                            value=ORIGINAL_RATIO_LABEL,
                             label="長寬比",
                             scale=3,
                             filterable=False,
@@ -971,7 +1128,7 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                             scale=3,
                             filterable=False,
                         )
-                        i2v_res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP)", scale=3)
+                        i2v_res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP) ｜ 💡 *尚未上傳圖片，上傳後將自動對齊原圖比例*", scale=3)
 
                     # Row 2: Duration, Seed, Random (Spec 4)
                     with gr.Row():
@@ -984,21 +1141,12 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
 
                     with gr.Accordion("⚙️ 進階參數", open=False):
                         with gr.Row():
-                            i2v_custom_w = gr.Slider(minimum=256, maximum=2560, value=1344, step=32, label="自訂寬度")
-                            i2v_custom_h = gr.Slider(minimum=256, maximum=2560, value=768, step=32, label="自訂高度")
-                        with gr.Row():
                             i2v_steps = gr.Slider(minimum=1, maximum=50, value=20, step=1, label="取樣步數")
                             i2v_denoise = gr.Slider(minimum=0.1, maximum=1.0, value=1.0, step=0.05, label="去噪強度")
                             i2v_fps = gr.Slider(minimum=12, maximum=60, value=24, step=1, label="影格率 (FPS)")
                         with gr.Row():
                             i2v_sampler = gr.Dropdown(choices=SAMPLER_CHOICES, value="res_multistep", label="取樣器", filterable=False)
                             i2v_scheduler = gr.Dropdown(choices=SCHEDULER_CHOICES, value="simple", label="調度器", filterable=False)
-                        with gr.Row():
-                            i2v_unet = gr.Textbox(value=DEFAULT_UNET, label="Diffusion Model (UNET)")
-                            i2v_clip = gr.Textbox(value=DEFAULT_CLIP, label="Text Encoder (CLIP)")
-                        with gr.Row():
-                            i2v_v_vae = gr.Textbox(value=DEFAULT_VIDEO_VAE, label="Video VAE")
-                            i2v_a_vae = gr.Textbox(value=DEFAULT_AUDIO_VAE, label="Audio VAE")
 
                     i2v_btn = gr.Button("🚀 開始生成影片", variant="primary", elem_classes=["primary-btn"])
 
@@ -1009,10 +1157,10 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
 
             # Auto resolution update listeners
             for comp in [i2v_aspect_ratio, i2v_quality_level]:
-                comp.change(on_resolution_change, inputs=[i2v_aspect_ratio, i2v_quality_level], outputs=[i2v_custom_w, i2v_custom_h, i2v_res_info])
+                comp.change(on_resolution_change, inputs=[i2v_aspect_ratio, i2v_quality_level, i2v_first_frame], outputs=[i2v_res_info])
 
             # Auto image resolution detection listener (Spec 3)
-            i2v_first_frame.change(on_first_frame_change, inputs=[i2v_first_frame, i2v_quality_level], outputs=[i2v_aspect_ratio, i2v_custom_w, i2v_custom_h, i2v_res_info, i2v_img_badge])
+            i2v_first_frame.change(on_first_frame_change, inputs=[i2v_first_frame, i2v_quality_level], outputs=[i2v_aspect_ratio, i2v_res_info, i2v_img_badge])
 
             i2v_rand_btn.click(generate_random_seed, outputs=[i2v_seed])
             i2v_btn.click(
@@ -1020,9 +1168,8 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                 inputs=[
                     i2v_first_frame, i2v_last_frame, i2v_prompt,
                     i2v_aspect_ratio, i2v_quality_level,
-                    i2v_custom_w, i2v_custom_h, i2v_duration, i2v_seed,
+                    i2v_duration, i2v_seed,
                     i2v_steps, i2v_denoise, i2v_sampler, i2v_scheduler, i2v_fps,
-                    i2v_unet, i2v_clip, i2v_v_vae, i2v_a_vae,
                     session_task_state, device_id_state
                 ],
                 outputs=[i2v_status, i2v_output_video, session_task_state, device_id_state]
@@ -1044,7 +1191,7 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                     # Row 1: Aspect Ratio, Quality Level (1~10)
                     with gr.Row():
                         t2v_aspect_ratio = gr.Dropdown(
-                            choices=list(ASPECT_RATIOS.keys()),
+                            choices=T2V_ASPECT_RATIOS,
                             value="16:9 (橫向風景)",
                             label="長寬比",
                             scale=3,
@@ -1070,21 +1217,12 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
 
                     with gr.Accordion("⚙️ 進階參數", open=False):
                         with gr.Row():
-                            t2v_custom_w = gr.Slider(minimum=256, maximum=2560, value=1344, step=32, label="自訂寬度")
-                            t2v_custom_h = gr.Slider(minimum=256, maximum=2560, value=768, step=32, label="自訂高度")
-                        with gr.Row():
                             t2v_steps = gr.Slider(minimum=1, maximum=50, value=20, step=1, label="取樣步數")
                             t2v_denoise = gr.Slider(minimum=0.1, maximum=1.0, value=1.0, step=0.05, label="去噪強度")
                             t2v_fps = gr.Slider(minimum=12, maximum=60, value=24, step=1, label="影格率 (FPS)")
                         with gr.Row():
                             t2v_sampler = gr.Dropdown(choices=SAMPLER_CHOICES, value="res_multistep", label="取樣器", filterable=False)
                             t2v_scheduler = gr.Dropdown(choices=SCHEDULER_CHOICES, value="simple", label="調度器", filterable=False)
-                        with gr.Row():
-                            t2v_unet = gr.Textbox(value=DEFAULT_UNET, label="Diffusion Model (UNET)")
-                            t2v_clip = gr.Textbox(value=DEFAULT_CLIP, label="Text Encoder (CLIP)")
-                        with gr.Row():
-                            t2v_v_vae = gr.Textbox(value=DEFAULT_VIDEO_VAE, label="Video VAE")
-                            t2v_a_vae = gr.Textbox(value=DEFAULT_AUDIO_VAE, label="Audio VAE")
 
                     t2v_btn = gr.Button("🚀 開始生成影片", variant="primary", elem_classes=["primary-btn"])
 
@@ -1095,7 +1233,7 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
 
             # Auto resolution update listeners
             for comp in [t2v_aspect_ratio, t2v_quality_level]:
-                comp.change(on_resolution_change, inputs=[t2v_aspect_ratio, t2v_quality_level], outputs=[t2v_custom_w, t2v_custom_h, t2v_res_info])
+                comp.change(on_resolution_change, inputs=[t2v_aspect_ratio, t2v_quality_level], outputs=[t2v_res_info])
 
             t2v_rand_btn.click(generate_random_seed, outputs=[t2v_seed])
             t2v_btn.click(
@@ -1103,9 +1241,8 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                 inputs=[
                     t2v_prompt,
                     t2v_aspect_ratio, t2v_quality_level,
-                    t2v_custom_w, t2v_custom_h, t2v_duration, t2v_seed,
+                    t2v_duration, t2v_seed,
                     t2v_steps, t2v_denoise, t2v_sampler, t2v_scheduler, t2v_fps,
-                    t2v_unet, t2v_clip, t2v_v_vae, t2v_a_vae,
                     session_task_state, device_id_state
                 ],
                 outputs=[t2v_status, t2v_output_video, session_task_state, device_id_state]
@@ -1149,8 +1286,8 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                     # Row 1: Aspect Ratio, Quality Level (1~10)
                     with gr.Row():
                         r2v_aspect_ratio = gr.Dropdown(
-                            choices=list(ASPECT_RATIOS.keys()),
-                            value="16:9 (橫向風景)",
+                            choices=I2V_ASPECT_RATIOS,
+                            value=ORIGINAL_RATIO_LABEL,
                             label="長寬比",
                             scale=3,
                             filterable=False,
@@ -1162,7 +1299,7 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                             scale=3,
                             filterable=False,
                         )
-                        r2v_res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP)", scale=3)
+                        r2v_res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP) ｜ 💡 *尚未上傳圖片，上傳後將自動對齊原圖比例*", scale=3)
 
                     # Row 2: Duration, Seed, Random (Spec 4)
                     with gr.Row():
@@ -1175,21 +1312,12 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
 
                     with gr.Accordion("⚙️ 進階參數", open=False):
                         with gr.Row():
-                            r2v_custom_w = gr.Slider(minimum=256, maximum=2560, value=1344, step=32, label="自訂寬度")
-                            r2v_custom_h = gr.Slider(minimum=256, maximum=2560, value=768, step=32, label="自訂高度")
-                        with gr.Row():
                             r2v_steps = gr.Slider(minimum=1, maximum=50, value=20, step=1, label="取樣步數")
                             r2v_denoise = gr.Slider(minimum=0.1, maximum=1.0, value=1.0, step=0.05, label="去噪強度")
                             r2v_fps = gr.Slider(minimum=12, maximum=60, value=24, step=1, label="影格率 (FPS)")
                         with gr.Row():
                             r2v_sampler = gr.Dropdown(choices=SAMPLER_CHOICES, value="res_multistep", label="取樣器", filterable=False)
                             r2v_scheduler = gr.Dropdown(choices=SCHEDULER_CHOICES, value="simple", label="調度器", filterable=False)
-                        with gr.Row():
-                            r2v_unet = gr.Textbox(value=DEFAULT_UNET, label="Diffusion Model (UNET)")
-                            r2v_clip = gr.Textbox(value=DEFAULT_CLIP, label="Text Encoder (CLIP)")
-                        with gr.Row():
-                            r2v_v_vae = gr.Textbox(value=DEFAULT_VIDEO_VAE, label="Video VAE")
-                            r2v_a_vae = gr.Textbox(value=DEFAULT_AUDIO_VAE, label="Audio VAE")
 
                     r2v_btn = gr.Button("🚀 開始生成影片", variant="primary", elem_classes=["primary-btn"])
 
@@ -1200,10 +1328,10 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
 
             # Auto resolution update listeners
             for comp in [r2v_aspect_ratio, r2v_quality_level]:
-                comp.change(on_resolution_change, inputs=[r2v_aspect_ratio, r2v_quality_level], outputs=[r2v_custom_w, r2v_custom_h, r2v_res_info])
+                comp.change(on_resolution_change, inputs=[r2v_aspect_ratio, r2v_quality_level, r2v_img1], outputs=[r2v_res_info])
 
             # Auto image resolution detection listener for R2V reference image (Spec 3)
-            r2v_img1.change(on_first_frame_change, inputs=[r2v_img1, r2v_quality_level], outputs=[r2v_aspect_ratio, r2v_custom_w, r2v_custom_h, r2v_res_info, r2v_img_badge])
+            r2v_img1.change(on_first_frame_change, inputs=[r2v_img1, r2v_quality_level], outputs=[r2v_aspect_ratio, r2v_res_info, r2v_img_badge])
 
             r2v_rand_btn.click(generate_random_seed, outputs=[r2v_seed])
             r2v_btn.click(
@@ -1212,9 +1340,8 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                     r2v_prompt, r2v_img1, r2v_img2, r2v_img3, r2v_img4,
                     r2v_video, r2v_audio, r2v_image_size,
                     r2v_aspect_ratio, r2v_quality_level,
-                    r2v_custom_w, r2v_custom_h, r2v_duration, r2v_seed,
+                    r2v_duration, r2v_seed,
                     r2v_steps, r2v_denoise, r2v_sampler, r2v_scheduler, r2v_fps,
-                    r2v_unet, r2v_clip, r2v_v_vae, r2v_a_vae,
                     session_task_state, device_id_state
                 ],
                 outputs=[r2v_status, r2v_output_video, session_task_state, device_id_state]
@@ -1254,33 +1381,47 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                 outputs=[gallery_video, gallery_info]
             )
 
-    # All outputs collected for full restore (55 components exact match)
+    # All outputs collected for full restore (49 components exact match)
     all_restored_outputs = [
         device_id_state,
         session_task_state,
         header_html,
         history_dropdown,
-        # I2V (16 components)
+        # I2V (14 components)
         i2v_first_frame, i2v_last_frame, i2v_prompt,
         i2v_aspect_ratio, i2v_quality_level,
-        i2v_custom_w, i2v_custom_h, i2v_duration, i2v_seed,
+        i2v_duration, i2v_seed,
         i2v_steps, i2v_denoise, i2v_fps, i2v_sampler, i2v_scheduler,
         i2v_status, i2v_output_video,
-        # T2V (14 components)
+        # T2V (12 components)
         t2v_prompt,
         t2v_aspect_ratio, t2v_quality_level,
-        t2v_custom_w, t2v_custom_h, t2v_duration, t2v_seed,
+        t2v_duration, t2v_seed,
         t2v_steps, t2v_denoise, t2v_fps, t2v_sampler, t2v_scheduler,
         t2v_status, t2v_output_video,
-        # R2V (21 components)
+        # R2V (19 components)
         r2v_prompt, r2v_video, r2v_audio,
         r2v_img1, r2v_img2, r2v_img3, r2v_img4,
         r2v_image_size,
         r2v_aspect_ratio, r2v_quality_level,
-        r2v_custom_w, r2v_custom_h, r2v_duration, r2v_seed,
+        r2v_duration, r2v_seed,
         r2v_steps, r2v_denoise, r2v_fps, r2v_sampler, r2v_scheduler,
         r2v_status, r2v_output_video,
     ]
+
+    # Spec Task 2: Auto-poll active task progress every 1s for reconnected sessions
+    task_poll_timer = gr.Timer(value=1.0)
+    task_poll_timer.tick(
+        poll_active_task_progress,
+        inputs=[device_id_state, session_task_state],
+        outputs=[
+            session_task_state,
+            i2v_status, i2v_output_video,
+            t2v_status, t2v_output_video,
+            r2v_status, r2v_output_video,
+            history_dropdown,
+        ]
+    )
 
     # Automatic page reload restoration (demo.load)
     demo.load(

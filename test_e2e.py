@@ -312,7 +312,7 @@ class E2ETestRunner:
 
             # Simulate browser triggering dropdown .change event (on_resolution_change)
             res_change = self.client.predict(ar_val, quality_val, api_name="/on_resolution_change")
-            assert len(res_change) == 3, f"Unexpected on_resolution_change return: {res_change}"
+            assert "輸出解析度" in str(res_change), f"Unexpected on_resolution_change return: {res_change}"
 
             # Simulate user manually switching device ID
             switch_res = self.client.predict("998877", legacy_device_id, None, api_name="/switch_manual_device_id")
@@ -336,18 +336,17 @@ class E2ETestRunner:
         # -------------------------------------------------------------
         t0 = time.time()
         user_device_id = f"dev_user_{uuid.uuid4().hex[:6]}"
-        test_img = self.create_valid_test_image(1280, 720)
+        # Create non-standard 3:2 aspect ratio image (1500 x 1000) to test adaptive alignment
+        test_img = self.create_valid_test_image(1500, 1000)
         try:
-            print("[*] Submitting live Image-to-Video (I2V) request via Gradio Client...")
+            print("[*] Submitting live Image-to-Video (I2V) request with '原圖比例 (自動對齊)' via Gradio Client...")
             # Submit generation request to the live server
             job = self.client.submit(
                 gradio_client.handle_file(test_img),  # i2v_first_frame
                 None,                                 # i2v_last_frame
                 "E2E High-Speed Train Crossing Cyberpunk City at Sunset",
-                "16:9 (橫向風景)",
+                "原圖比例 (自動對齊)",
                 "5 (1.0 MP - 標準推薦)",
-                1344,
-                768,
                 2.0,
                 88888,
                 20,
@@ -355,10 +354,6 @@ class E2ETestRunner:
                 "res_multistep",
                 "simple",
                 24,
-                app.DEFAULT_UNET,
-                app.DEFAULT_CLIP,
-                app.DEFAULT_VIDEO_VAE,
-                app.DEFAULT_AUDIO_VAE,
                 None,
                 user_device_id,
                 api_name="/handle_i2v_generate",
@@ -388,10 +383,17 @@ class E2ETestRunner:
             assert final_task_id, "Missing task_id in final generation yield"
             assert final_dev_id == user_device_id, f"Device ID mismatch in output: {final_dev_id}"
 
+            # Verify adaptive resolution was computed to exact 1248 x 832 (Spec 6)
+            t_obj = task_manager.get_task(final_task_id, device_id=user_device_id)
+            assert t_obj is not None, "Task object not found in task_manager"
+            assert t_obj.params["width"] == 1248 and t_obj.params["height"] == 832, (
+                f"Expected adaptive resolution 1248x832 for 1500x1000 input, got {t_obj.params['width']}x{t_obj.params['height']}"
+            )
+
             self.log_step(
                 "Step 4 & 5: Video Generation Request & Real-Time Progress Stream",
                 True,
-                f"Streamed progress through stages: {observed_stages} -> Completed (Task ID: {final_task_id[:16]})",
+                f"Streamed progress through stages: {observed_stages} -> Completed (Task ID: {final_task_id[:16]}, Resolution: {t_obj.params['width']}x{t_obj.params['height']})",
                 time.time() - t0
             )
         except Exception as e:

@@ -168,6 +168,55 @@ def queue_prompt(prompt_graph: Dict[str, Any], client_id: str, server_url: Optio
     return prompt_id
 
 
+def interrupt_execution(prompt_id: Optional[str] = None, server_url: Optional[str] = None) -> bool:
+    """
+    Interrupts current execution on ComfyUI and dequeues the given prompt_id if pending.
+    Returns True if an interrupt or delete request succeeded, False otherwise.
+    """
+    server_url = server_url or COMFY_SERVER_URL
+    success = False
+
+    # 1. If prompt_id is specified, dequeue from pending queue or cancel job
+    if prompt_id:
+        # Try modern job cancel endpoint
+        try:
+            cancel_resp = requests.post(f"{server_url}/api/jobs/{prompt_id}/cancel", timeout=3)
+            if cancel_resp.status_code == 200:
+                logger.info("ComfyUI cancelled job %s via /api/jobs/{id}/cancel", prompt_id)
+                success = True
+        except Exception:
+            pass
+
+        # Dequeue from pending queue
+        try:
+            del_resp = requests.post(f"{server_url}/queue", json={"delete": [prompt_id]}, timeout=3)
+            if del_resp.status_code == 200:
+                logger.info("ComfyUI deleted prompt %s from queue", prompt_id)
+                success = True
+        except Exception:
+            pass
+
+        # Targeted interrupt
+        try:
+            int_resp = requests.post(f"{server_url}/interrupt", json={"prompt_id": prompt_id}, timeout=3)
+            if int_resp.status_code == 200:
+                logger.info("ComfyUI interrupted prompt %s via /interrupt", prompt_id)
+                success = True
+        except Exception:
+            pass
+
+    # 2. General interrupt for any currently executing prompt
+    try:
+        gen_resp = requests.post(f"{server_url}/interrupt", json={}, timeout=3)
+        if gen_resp.status_code == 200:
+            logger.info("ComfyUI general /interrupt sent successfully")
+            success = True
+    except Exception as e:
+        logger.debug("ComfyUI general interrupt exception: %s", e)
+
+    return success
+
+
 def download_output_file(
     filename: str,
     subfolder: str = "",
