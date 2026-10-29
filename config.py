@@ -5,7 +5,7 @@ import socket
 import os
 import math
 import re
-from typing import Tuple, Dict, Any, Union, Optional
+from typing import Tuple, Dict, Any, Union, Optional, List
 from PIL import Image
 
 # Server connection
@@ -445,3 +445,34 @@ def duration_to_frames(duration_seconds: float, fps: int = 24) -> int:
     raw_frames = round(duration_seconds * fps)
     return align_frame_count(raw_frames)
 
+
+
+# Video Resolution Upscaler Constants & Model Discovery
+DEFAULT_UPSCALE_MODELS_DIR = os.environ.get(
+    "UPSCALE_MODELS_DIR", r"F:\Comfy_models\upscale_models"
+)
+
+
+def get_upscale_models(models_dir: Optional[str] = None) -> List[str]:
+    """
+    Scans the upscale models directory and returns a sorted list of model filenames.
+    Defaults to F:\\Comfy_models\\upscale_models.
+    """
+    path = models_dir or DEFAULT_UPSCALE_MODELS_DIR
+    valid_exts = (".safetensors", ".pth", ".pt", ".bin", ".onnx")
+    models = []
+    if os.path.exists(path) and os.path.isdir(path):
+        try:
+            for f in os.listdir(path):
+                if any(f.endswith(ext) for ext in valid_exts):
+                    models.append(f)
+        except Exception:
+            pass
+    if not models:
+        # Fallback presets if directory is inaccessible or empty
+        models = [
+            "4x-AnimeSharp.safetensors",
+            "4x-UltraSharp.safetensors",
+            "RealESRGAN_x4plus.safetensors",
+        ]
+    return sorted(models)

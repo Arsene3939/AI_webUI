@@ -21,193 +21,113 @@
 
 # 接下來要執行的任務與詳細規劃：
 
-## 1. 架構重組目標與核心原則 (OOP & Modular Architecture)
-- **現狀問題**：原 `app.py` 高達 2444 行，將所有 UI 元件構建、樣式、業務邏輯、事件回呼、狀態恢復、管理員功能與後端進程混雜於單一檔案中。I2V、T2V、R2V 介面出現大量重複的參數輸入與視訊播放卡片，狀態恢復透過硬編碼 49 個元素的巨型元組傳遞，極度臃腫且擴展困難。
-- **重構原則**：
-  1. **DRY (Don't Repeat Yourself)**：能不重複寫的代碼絕不重複寫。共用參數卡片、播放器、進度條、工具列等全面抽離為獨立元件。
-  2. **物件導向設計 (OOP & Abstraction)**：透過抽象基類 (`BaseView`) 與 ComfyUI 專用基類 (`ComfyUIBaseView`)，確立所有功能視圖的統一生命週期（`render`, `register_events`, `restore_state`, `poll_progress`）。
-  3. **職責分離 (Separation of Concerns)**：`app.py` 僅作整體裝配與進入點；UI 元件歸入 `components/`；核心功能視圖歸入 `views/`；底層通用抽象與管理器歸入 `core/`。
-  4. **嚴格向前相容 (Backward Compatibility)**：保留現有裝置隔離機制、狀態還原流程及既有測試介面。
+## 0. 重複提醒：注意事項
+- 應避免UI介面出現過多開發相關字詞，讓使用者只看到他需要看到的東西
+- 很多東西其實使用者根本不在乎，例如：支援電腦與手機... 
+
+## 1. Sidebar 的設計與 Debug (已完成施工)
+
+### 1.1 問題根因剖析
+1. **手機端占滿全版問題**：
+   - Gradio 前端打包之 `Index-B3LSO2or.css` 內建媒體查詢：
+     `@media (width <= 768px) { .sidebar { width: 100vw !important; left: -100vw !important; } }`
+     此規則以 `!important` 強制覆蓋 Python 端傳入的 `width` 參數，導致手機螢幕上一律強制撐滿 100vw。
+   - **修復方案**：在 `components/styles.py` 中以更高優先級覆蓋：
+     `@media (max-width: 768px) { .sidebar, div[class*="sidebar"] { width: 260px !important; max-width: 80vw !important; left: -260px !important; } }`
+     確保無論在任何行動裝置螢幕下，展開寬度一律限制在 260px / 80vw 內。
+2. **擠壓原有 UI 問題**：
+   - Gradio 原生機制在側邊欄展開時，會於外層容器添加內距：
+     `.sidebar-parent:has(.sidebar.open) { padding-left: var(--overlap-amount); }`
+     造成主版面被強制往右擠壓變形。
+   - **修復方案**：強制將父容器的內距重設為 0：
+     `.sidebar-parent, .sidebar-parent:has(.sidebar.open) { padding-left: 0 !important; }`
+     並為 `.sidebar.open` 增加陰影浮層效果 (`box-shadow: 6px 0 24px rgba(0,0,0,0.6)` 與 `z-index: 1005`)，實現真正的抽屜式懸浮覆蓋 (Overlay)。
+3. **精簡選項與去除贅字**：
+   - 全面移除冗長的「使用說明」文字與多餘的快捷按鈕區塊。
+   - 僅保留俐落的**三行核心選項** (`gr.Radio` 樣式化卡片)，點擊即切換，無下拉選單遮擋問題。
 
 ---
 
-## 2. 系統目錄結構詳細規劃
-重構後的專案目錄結構如下：
-```text
-F:\program_file\AI_webUI\
-├── app.py                         # 系統進入點 (Slim Entry Point，負責裝配與伺服器啟動)
-├── config.py                      # 全域設定常數、解析度計算與維護旗標
-├── comfy_client.py                # ComfyUI API 通訊、WebSocket 進度與進程管理
-├── task_manager.py                # 裝置隔離任務佇列與儲存管理器
-├── logger.py                      # 統一 Logging 管理器
-├── core/                          # 核心抽象與系統管理
-│   ├── __init__.py
-│   ├── base_view.py               # 抽象視圖基類 BaseView (定義生命週期與介面契約)
-│   ├── comfy_view.py              # ComfyUI 系列視圖基類 ComfyUIBaseView (繼承 BaseView)
-│   ├── session_context.py         # 裝置 Session 與狀態管理器 (封裝裝置 ID 與還原邏輯)
-│   ├── admin_manager.py           # 管理員權限、自訂 IP 名單與伺服器狀態維護
-│   └── port_guardian.py           # 通訊埠 7860 佔用檢測與排查診斷工具
-├── components/                    # 可重複使用的模組化網頁元件
-│   ├── __init__.py
-│   ├── styles.py                  # 全域 CSS 與客戶端 JavaScript 腳本
-│   ├── header.py                  # 頂部導航橫幅 HeaderComponent (IP、ID 徽章、維護警示)
-│   ├── dashboard_sidebar.py       # 左上方展開式 Dashboard 導航選單 (切換 3 大核心模組)
-│   ├── comfy_toolbar.py           # ComfyUI 後端模型狀態與啟停工具列 (ComfyToolbarComponent)
-│   ├── video_params.py            # 視訊生成共用參數卡片 (VideoParamsComponent: 時長/步數/FPS/種子/去噪/取樣)
-│   ├── media_player.py            # 進度條 + 影片播放器 + 恢復按鈕 (VideoPlayerCardComponent)
-│   └── history_gallery.py         # 歷史紀錄檢視器元件 (HistoryGalleryComponent)
-├── views/                         # 三大核心功能視圖與管理面板
-│   ├── __init__.py
-│   ├── minimax/                   # 模組 1: MiniMax-H3 影片生成
-│   │   ├── __init__.py
-│   │   ├── view.py                # MiniMaxView (繼承 ComfyUIBaseView)
-│   │   └── tabs/                  # I2V, T2V, R2V 子頁面
-│   │       ├── __init__.py
-│   │       ├── i2v_tab.py         # 圖生影片子頁面
-│   │       ├── t2v_tab.py         # 文生影片子頁面
-│   │       └── r2v_tab.py         # 參考生影片子頁面
-│   ├── upscaler/                  # 模組 2: 影片超解析度放大 (Video Resolution Upscaler)
-│   │   ├── __init__.py
-│   │   └── view.py                # UpscalerView (繼承 ComfyUIBaseView，預留並具備基本 UI)
-│   ├── strata/                    # 模組 3: Strata LLM (Qwen3.8-flash-next)
-│   │   ├── __init__.py
-│   │   └── view.py                # StrataView (繼承 BaseView，文字問答/助手介面)
-│   └── admin/                     # 管理員專區
-│       ├── __init__.py
-│       └── view.py                # AdminPanelView (繼承 BaseView)
-├── workflow_builder.py            # MiniMax 工作流產生器
-├── tests/                         # 單元測試集
-├── run.bat                        # 主要啟動腳本
-└── run_tests.bat                  # 測試執行腳本
-```
+## 2. 準備 Upscaler (影片超解析度放大) 實作分析
 
----
+為確保後續 Upscaler 模組施工平穩無痛，以下全面盤點目前「尚未就緒的元件」與「高機率產生 Bug 的技術風險」：
 
-## 3. 左側 Dashboard 設計與導航機制 (gr.Sidebar)
-- **位置與形式**：
-  - 於頁面左側採用 Gradio 原生 `gr.Sidebar` 實現抽屜式導航欄，支援平滑展開與收合（避免使用傳統下拉選單 `gr.Dropdown` 或頂部摺疊面板）。
-  - 展開後提供三大核心項目之快速切換：
-    1. 🎬 `comfyUI: minimax video generator` (MiniMax-H3 影片生成系統)
-    2. 🔍 `comfyUI: video resolution upscaler` (影片解析度放大增強系統)
-    3. 💬 `strata: Qwen3.8-flash-next LLM` (Strata 語言模型智慧工作台)
-- **聯動機制**：
-  - 各模組封裝於獨立的 `gr.Column` 容器中。
-  - 透過 `gr.Radio` 與快捷按鈕觸發狀態切換，完全杜絕下拉選單遮擋問題；點擊 Dashboard 項目時切換各容器的 `visible=True/False`，達到瞬間流暢切換且互不干擾的效果。
+### 2.1 目前還沒準備好 (尚未實作) 的部分
+1. **ComfyUI 專屬超解析工作流 JSON 節點圖構建器 (`views/upscaler/workflow_builder.py`)**：
+   - 需實作類似 MiniMax 的節點圖生成器，定義下列節點之連線拓撲：
+     - `VHS_LoadVideo`：輸入影片解碼為 Batched Image Frames 與 Audio。
+     - `UpscaleModelLoader`：載入超解析模型檔 (如 RealESRGAN, HAT, Compact)。
+     - `ImageUpscaleWithModel` 或 `ImageTileUpscale`：影格分塊放大核心運算。
+     - `VHS_VideoCombine`：影格重新合成為 MP4。
+2. **音訊無損合流管線 (Audio Preservation)**：
+   - 影像超解析模型僅處理視覺影格，若直接將放大後之影格重新編碼，原始影片中的聲音軌道將遺失。
+   - 需確保 `VHS_LoadVideo` 的音訊輸出埠直接連線至 `VHS_VideoCombine` 的音訊輸入端，或後端透過 `ffmpeg` 二進位處理無損混流。
+3. **任務管理器架構相容 (`task_manager.py`)**：
+   - 目前 `Task` 資料結構與 `create_task` 主要專屬 MiniMax 欄位 (`mode`, `aspect_ratio`, `duration`, `quality_level`)。
+   - 需擴充支援 `task_type="upscale"`，包含 `scale_factor` (2x/4x)、`model_name`、`tile_size`、`tile_blending` 與來源影片路徑。
+4. **ComfyUI 自訂節點與模型權重依賴檢核**：
+   - ComfyUI 根目錄需安裝 `ComfyUI-VideoHelperSuite` 插件。
+   - ComfyUI `models/upscale_models/` 目錄需具備對應模型檔（如 `RealESRGAN_x4plus.pth`）。
+5. **Tile 快取實體清理邏輯 (`on_clean_tile_cache`)**：
+   - `UpscalerAdminTab` 的「清理 Tile 快取」按鈕目前為 UI 存根，尚未綁定實際刪除磁碟快取目錄之回呼。
 
----
+### 2.2 可能會出 Bug 的技術風險與防呆規劃
+1. **GPU 顯存溢出 (CUDA Out-of-Memory, OOM)**：
+   - **風險**：影片 4x 放大將使像素暴增 16 倍（例如 1080p 放大至 4K）。若單次將整張超大影格送入神經網路，一般顯卡 (8GB~16GB VRAM) 將直接爆發 CUDA OOM 崩潰。
+   - **防禦**：必須嚴格啟用分塊放大機制 (`Tile Upscale`，預設 256~512px)，並在邊界重疊 16~32px 進行 Alpha 融合；或依據可用 VRAM 動態限縮單次推論之 Batch Size (如 1~4 幀)。
+2. **影格率 (FPS) 失針與音畫不同步**：
+   - **風險**：不同輸入影片具有不同幀率（如 23.976, 24, 25, 29.97, 30, 60 FPS）。若 `VHS_VideoCombine` 寫死固定幀率（如 24 FPS），輸出影片將出現畫面播放過快或變慢，導致音畫完全分離。
+   - **防禦**：必須從 `VHS_LoadVideo` 讀取並動態傳遞原始影片的真實 FPS，確保輸出與原始輸入 100% 吻合。
+3. **影片編碼格式相容性問題**：
+   - **風險**：使用者可能上傳特殊編碼（如 HEVC/H.265 10-bit、AV1、Apple ProRes、非標準長寬像素比），ComfyUI 內建 OpenCV 或 ffmpeg 解碼可能引發例外中斷。
+   - **防禦**：在提交任務前，後端執行快速格式嗅探與有效性驗證；必要時先由後端 ffmpeg 轉碼為標準 H.264 再送入工作流。
+4. **超長運算時長導致輪詢逾時**：
+   - **風險**：一段 5~10 秒的影片（120~240 幀），4x 放大耗時常達 2~8 分鐘。若 HTTP / WebSocket 輪詢沒有設定心跳或逾時門檻過短，前端會誤判任務失敗。
+   - **防禦**：比照 MiniMax 的背景執行緒架構，以 TaskManager 獨立 Thread 監聽 ComfyUI 進度，定時推播百分比與當前放大影格數 (如 `第 45/120 幀`)。
+5. **多任務併行與中斷隔離 (Cross-Module Preemption)**：
+   - **風險**：使用者在 Upscaler 生成途中切換至 MiniMax 生成影片，若呼叫全域中斷，可能誤殺正在進行中的超解析運算。
+   - **防禦**：中斷邏輯需精確指定 `task_id`，確保 MiniMax 與 Upscaler 各自的任務互不影響。
 
-## 4. 物件導向視圖架構 (OOP Hierarchy)
-- **`BaseView(ABC)`**：
-  - `render(session_ctx: SessionContext) -> gr.Column`：建構並返回該視圖的 Gradio UI 佈局。
-  - `register_events(session_ctx: SessionContext) -> None`：綁定視圖元件的所有事件處理。
-  - `get_restore_components() -> List[Any]`：返回該視圖需參與狀態還原之元件清單。
-  - `restore_state(task: Optional[Task], device_id: str) -> List[Any]`：產生此視圖在頁面重整時的更新清單。
-  - `poll_progress(task: Optional[Task], device_id: str) -> List[Any]`：產生此視圖在背景任務更新時的進度更新。
-- **`ComfyUIBaseView(BaseView)`**：
-  - 繼承 `BaseView`，共用 ComfyUI 後端狀態工具列與伺服器健康度檢查。
-  - 封裝維護模式阻斷機制 (`SERVER_STATUS_UPDATING` 偵測與友善提示)。
-  - 封裝通用 ComfyUI 工作流提交、輪詢與中斷協調。
-- **具體實作類別**：
-  - `MiniMaxView(ComfyUIBaseView)`：整合 I2V、T2V、R2V 分頁、歷史檢視與各生成處理函式。
-  - `UpscalerView(ComfyUIBaseView)`：影片上傳、放大倍率 (2x/4x)、模型選擇、畫質增強之視圖封裝。
-  - `StrataView(BaseView)`：Strata / Qwen3.8 聊天視窗、Prompt 系統設定、上下文管理。
-  - `AdminPanelView(BaseView)`：伺服器狀態切換、顯存清理、佇列監控、全域任務管理與管理員 IP 白名單。
 
----
+### 2.3 Upscaler 施工落地檢核 (Execution Checklist)
+- [x] **Step 1: 動態模型掃描函式 (`config.py`)**
+  - 實作 `get_upscale_models()`，精確掃描 `F:\Comfy_models\upscale_models` 目錄下的 `.safetensors`, `.pth`, `.pt` 模型。
+- [x] **Step 2: ComfyUI 超解析工作流生成器 (`views/upscaler/workflow_builder.py`)**
+  - 嚴格參照 `utility-gan_upscaler.json`，建構 6 節點 API 拓撲 (`LoadVideo` -> `GetVideoComponents` -> `UpscaleModelLoader` -> `ImageUpscaleWithModel` -> `CreateVideo` -> `SaveVideo`)，無損合流原始音軌與影格率 (FPS)。
+- [x] **Step 3: 前端視圖與事件綁定實作 (`views/upscaler/view.py`)**
+  - 下拉選單動態載入模型，提供一鍵刷新按鈕。
+  - 視訊上傳、放大生成按鈕、中斷按鈕、播放器卡片與進度顯示。
+  - 專屬 `HistoryGalleryComponent(task_type="UPSCALER")` 歷史紀錄隔離瀏覽與刪除。
+  - 背景定時輪詢 (`task_poll_timer`) 自動更新進度與載入完成影片。
+- [x] **Step 4: 單元測試套件建立 (`tests/test_upscaler.py`)**
+  - 覆蓋節點拓撲正確性、模型目錄掃描、UI 渲染與任務建立。
 
-## 5. 模組化網頁元件 (DRY Components)
-- **`VideoParamsComponent`**：
-  - 統一封裝：長寬比、畫質等級、影片時長、取樣步數、影格率 (FPS)、隨機種子 (含隨機按鈕)、去噪強度、取樣器、調度器。
-  - 一行代碼即可在 I2V / T2V / R2V 或 Upscaler 中複用，並提供統一的參數字典讀取與設定介面。
-- **`VideoPlayerCardComponent`**：
-  - 統一封裝：標準進度條 HTML (`build_progress_html`)、"恢復上次輸入與成果"按鈕、影片播放器 (`gr.Video`)。
-- **`ComfyToolbarComponent`**：
-  - 封裝後端連線檢查、啟動後端按鈕、停止按鈕及硬體資源預先檢查。
-- **`HeaderComponent`**：
-  - 封裝系統橫幅、內網 IP 標籤、簡潔 Device ID 徽章（含點擊複製與✏️手動修改按鈕）、維護中警示條。
-- **`HistoryGalleryComponent`**：
-  - 封裝歷史任務下拉選單、影片播放器、任務詳細資訊 Markdown 及刪除任務按鈕。
-
----
-
-## 6. 施工步驟與驗證規劃 (Execution Checklist)
-- [x] **Step 1: 伺服器狀態維護模式**
-  - 依據規範，在 `config.py` 中將 `SERVER_STATUS = SERVER_STATUS_UPDATING`。
-- [x] **Step 2: 建立 `components/` 模組**
-  - 實作 `styles.py`、`header.py`、`dashboard_sidebar.py`、`comfy_toolbar.py`、`video_params.py`、`media_player.py`、`history_gallery.py`。
-- [x] **Step 3: 建立 `core/` 系統架構模組**
-  - 實作 `base_view.py`、`comfy_view.py`、`session_context.py`、`admin_manager.py`、`port_guardian.py`。
-- [x] **Step 4: 建立 `views/` 核心視圖模組**
-  - 實作 `views/minimax/view.py` (含 I2V, T2V, R2V 子分頁)。
-  - 實作 `views/upscaler/view.py` (Upscaler 視圖基底)。
-  - 實作 `views/strata/view.py` (Strata 視圖基底)。
-  - 實作 `views/admin/view.py` (AdminPanelView)。
-- [x] **Step 5: 重構 `app.py` 作為精簡進入點**
-  - 裝配所有模組與全域事件，提供相容性導出介面 (`demo`, `restore_device_state`, `all_restored_outputs` 等)。
-- [x] **Step 6: 驗證與測試**
-  - 運行全套單元測試 (`tests/`)，確保所有既有功能與狀態隔離測試全數通過 (100% Green)。
-- [x] **Step 7: 復原伺服器狀態旗標**
-  - 將 `config.py` 改回 `SERVER_STATUS = SERVER_STATUS_OK`。
-
----
-
-## 7. 階段二：管理員標籤階層化 (Tab-Level OOP) 與 IP 識別 Bug 修復
-
-### 7.1 現象與問題剖析
-1. **本機/已登錄 IP 無法看到管理員頁面**：
-   - Windows 雙棧環境下，Uvicorn/FastAPI 將本機連線之 `request.client.host` 報告為 IPv4-mapped IPv6（例如 `::ffff:127.0.0.1` 或 `::ffff:192.168.x.x`）。
-   - 舊版 `AdminManager.get_local_ip_set()` 僅比對 IPv4 字串 `127.0.0.1`，造成字串比對失敗而判定非超級使用者。
-   - 原架構重構時，管理員標籤頁被孤立放置於 `gr.Blocks` 根目錄，脫離各視圖的 `gr.Tabs()` 容器，導致 Gradio 無法正常渲染標籤頁。
-2. **管理員頁面層級定位與物件導向繼承**：
-   - 管理員頁面應屬於各模組內部的 `gr.Tab`，而非獨立外部頁面。
-   - 三個 View 既有共用模組（維護開關、硬體監控、裝置管理、ComfyUI 顯存清理等），亦有各視圖專屬介面（MiniMax 任務過濾、Upscaler Tile 快取、Strata API 金鑰）。需以物件導向繼承與封裝完整落實。
-
-### 7.2 物件導向繼承架構設計
-```mermaid
-classDiagram
-    class BaseAdminTab {
-        <<abstract>>
-        +render_common_controls()
-        +render_module_specific() *
-        +render(session_ctx) gr.Tab
-    }
-    class ComfyUIAdminTab {
-        <<abstract>>
-        +render_comfy_controls()
-    }
-    class MiniMaxAdminTab {
-        +render_module_specific()
-    }
-    class UpscalerAdminTab {
-        +render_module_specific()
-    }
-    class StrataAdminTab {
-        +render_module_specific()
-    }
-
-    BaseAdminTab <|-- ComfyUIAdminTab
-    BaseAdminTab <|-- StrataAdminTab
-    ComfyUIAdminTab <|-- MiniMaxAdminTab
-    ComfyUIAdminTab <|-- UpscalerAdminTab
-```
-
-### 7.3 執行項目與驗證檢核 (Phase 2 Checklist)
-- [x] **Step 1: IP 正規化與權限判定修復**
-  - 於 `core/admin_manager.py` 實作 `normalize_ip()`，自動解析 `::ffff:` 前綴與 `is_loopback`。
-- [x] **Step 2: 管理員 Tab 物件導向階層建立**
-  - 實作 `core/base_admin_tab.py` (`BaseAdminTab`)。
-  - 實作 `core/comfy_admin_tab.py` (`ComfyUIAdminTab`)。
-  - 實作 `views/minimax/admin_tab.py` (`MiniMaxAdminTab`)。
-  - 實作 `views/upscaler/admin_tab.py` (`UpscalerAdminTab`)。
-  - 實作 `views/strata/admin_tab.py` (`StrataAdminTab`)。
-- [x] **Step 3: 嵌入各 View 內部 Tabs**
-  - 於 `MiniMaxView`、`UpscalerView`、`StrataView` 內部的 `gr.Tabs()` 掛載各自專屬的管理員 Tab。
-  - 於 `app.py` 中實作 `update_all_admin_tabs_visibility`，同時控制三個模組的管理員 Tab 顯示/隱藏。
-- [x] **Step 4: 單元測試與回歸驗證**
-  - 新增 `tests/test_admin_tabs.py` (5 項測試)，驗證類別繼承、IP 正規化與組件生成。
-  - 全套 87 項單元測試 100% 通過。
-- [x] **Step 5: 功能落地狀態文件化**
-  - 於 `README.md` 詳實記錄三大模組之已實作功能與待實作功能。
-- [x] **Step 6: 伺服器狀態復原**
+### 2.4 端到端測試 (End-to-End Test Suite) 模組化與落地檢核
+- [x] **Step 1: 建立專屬 E2E 測試目錄 (`e2e_tests/`)**
+  - 搬移並重新命名既有測試：`test_e2e.py` -> `e2e_tests/minimax_test_e2e.py`。
+  - 在專案根目錄保留輕量級轉發腳本 `test_e2e.py` 確保向下相容性。
+- [x] **Step 2: 實作超解析全生命週期端到端測試 (`e2e_tests/upscaler_test_e2e.py`)**
+  - 完整模擬真實使用者生命週期 8 大步驟：
+    1. 啟動 Mock ComfyUI 後端與連線驗證。
+    2. 啟動前端 WebUI 伺服器並執行 HTTP 200 健康檢查。
+    3. 模擬使用者開啟網頁並動態發現 `upscale_models` 模型。
+    4. 發起影片超解析請求 (`/handle_upscale_generate`)，校驗 6 核心節點工作流圖。
+    5. 即時監聽串流進度更新（前處理 -> 執行中 -> 後處理 -> 100% 完成）。
+    6. 模擬使用者下載生成之 MP4 影片並校驗二進位標頭 (`ftyp` / `isom`) 完整性。
+    7. 驗證超解析歷史畫廊檢索與嚴格多裝置隔離（含刪除任務操作）。
+    8. WebUI 與後端伺服器優雅關閉與資源釋放。
+- [x] **Step 3: 自動化測試腳本升級 (`run_tests.bat`)**
+  - 三階段依序執行：`pytest` (94 項) -> `minimax_test_e2e.py` -> `upscaler_test_e2e.py`，守護全系統綠燈。
+- [x] **Step 4: 伺服器狀態復原**
   - 將 `config.py` 改回 `SERVER_STATUS = SERVER_STATUS_OK`，並同步寫入 `.server_status`。
 
+### 2.5 錯誤根因檢討與 Schema 嚴格防護檢核 (CreateVideo bit_depth Bug Fix)
+- [x] **根因分析**：
+  - 參考的 `utility-gan_upscaler.json` 為 ComfyUI Web GUI 導出之前端圖檔，其 Widget 預設值為字串 `"bit_depth": "auto"`。
+  - ComfyUI 後端 Python 節點 `class CreateVideo`（`comfy_extras/nodes_video.py`）定義為 `io.Int.Input("bit_depth", min=8, max=10, default=8)`，驗證時執行 `int(val)` 強制轉換，導致 Python 拋出 `ValueError: invalid literal for int() with base 10: 'auto'`。
+- [x] **測試盲區檢討 (為甚麼 E2E 測試未測出)**：
+  - 原 E2E 測試中的 Mock ComfyUI 伺服器僅檢查 6 個核心節點 ID 是否存在（結構完整性），未模擬 ComfyUI 內部 `execution.validate_prompt` 之型別轉型強制驗證。
+- [x] **加固修正落地**：
+  - [views/upscaler/workflow_builder.py](file:///F:/program_file/AI_webUI/views/upscaler/workflow_builder.py)：修正 `CreateVideo` 節點輸入為合法整數 `"bit_depth": 8`，並移除不存在之 `color_space` 與 `codec`。
+  - [e2e_tests/upscaler_test_e2e.py](file:///F:/program_file/AI_webUI/e2e_tests/upscaler_test_e2e.py)：Mock ComfyUI 伺服器新增節點輸入型別嚴格驗證（模擬 ComfyUI 轉型檢查），防止非法型別通過。
+  - [tests/test_upscaler.py](file:///F:/program_file/AI_webUI/tests/test_upscaler.py)：單元測試新增 `isinstance(bit_depth, int)` 與範圍斷言。

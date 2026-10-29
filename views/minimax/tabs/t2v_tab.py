@@ -183,6 +183,7 @@ class T2VTab:
                 session_task_state, device_id_state,
             ],
             outputs=[self.player_card.status, self.player_card.output_video, session_task_state, device_id_state],
+            api_name="handle_t2v_generate",
             concurrency_limit=None,
         ).then(
             lambda: (gr.update(visible=True), gr.update(visible=False)),

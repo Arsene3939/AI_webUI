@@ -39,7 +39,7 @@ def build_header_html(device_id: Optional[str] = None) -> str:
     <div class="header-card">
         <h2 style="margin: 0 0 8px 0; font-size: 1.5rem;">🎬 MiniMax-H3 影片生成系統</h2>
         <div style="font-size: 0.95rem; opacity: 0.9; line-height: 1.6;">
-            📱 <b>手機內網連線網址：</b> <span class="ip-badge">http://{lan_ip}:{WEBUI_PORT}</span>
+            🌐 <b>連線網址：</b> <span class="ip-badge">http://{lan_ip}:{WEBUI_PORT}</span>
             {dev_str}
         </div>
         {status_banner}

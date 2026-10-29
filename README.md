@@ -54,7 +54,7 @@
 | 模組名稱 | 類別與定位 | 實作狀態 | 當前已實作功能 (Done) | 待實作 / 規劃中功能 (Pending) |
 | :--- | :--- | :---: | :--- | :--- |
 | **🎬 ComfyUI: MiniMax Video Generator** | 視訊生成核心 | **✅ 100% 完整就緒** | • 圖生影片 (I2V / `fl2va`，支援首幀必填、尾幀選填)<br>• 文生影片 (T2V / `t2va`，純文字驅動音視訊)<br>• 參照生影片 (R2V / `ref2va`，支援 4 圖 + 視訊 + 音訊與 `<Picture 1>` 錨定)<br>• 自適應原圖比例網格搜尋演算 (誤差 < 0.3%)<br>• $17k+5$ 幀數吸附定律與 32 像素硬體編碼對齊<br>• 任務搶佔與即時中斷機制 (`TaskManager.interrupt_device_tasks`)<br>• 斷線背景自動輪詢與工作階段恢復 (`BrowserState`)<br>• 獨立歷史紀錄畫廊與單筆記錄刪除<br>• 專屬 MiniMax 管理員 Tab (跨裝置任務過濾、參數檢視、強制終止) | • 多段提示詞關鍵幀插值動畫 (Keyframe Interpolation) |
-| **🔍 ComfyUI: Video Resolution Upscaler** | 視訊超解析放大 | **🟡 介面與架構就緒<br>後端工作流待對接** | • 視訊上傳拖曳與預覽卡片<br>• 放大倍率選擇 (2x / 4x)<br>• 超解析模型選擇 (RealESRGAN_x4plus, Compact, HAT)<br>• 分塊大小 (Tile Size: 128~512px) 與融合邊界 (Tile Blending) 參數卡片<br>• 播放器卡片與進度條 UI<br>• 歷史超解析紀錄列表佈局<br>• 專屬 Upscaler 管理員 Tab (繼承 `ComfyUIAdminTab`，具備顯存清理、重啟後端、Tile Cache 介面) | • ComfyUI 超解析工作流節點圖生成器 (`views/upscaler/workflow_builder.py`)<br>• 後端視訊音訊分離與音軌無損合成分離管線 (VHS_LoadVideo -> UpscaleModelLoader -> ImageUpscaleWithModel -> VHS_VideoCombine)<br>• 實體 Tile Cache 暫存目錄清理邏輯 |
+| **🔍 ComfyUI: Video Resolution Upscaler** | 視訊超解析放大 | **✅ 100% 完整就緒** | • 視訊上傳拖曳與即時預覽<br>• 動態讀取 `F:\Comfy_models\upscale_models` 模型清單與一鍵刷新<br>• 嚴格對接官方 `utility-gan_upscaler.json` 工作流<br>• 原生 6 節點管線 (`LoadVideo` -> `GetVideoComponents` -> `UpscaleModelLoader` -> `ImageUpscaleWithModel` -> `CreateVideo` -> `SaveVideo`)<br>• 原始音訊無損合流與真實影格率 (FPS) 完美保留<br>• 任務排程、背景監控與多裝置獨立歷史畫廊<br>• 專屬 Upscaler 管理員 Tab (顯存清理、重啟後端、Tile Cache 介面) | • 支援多段時序截取 (VideoSlice) 進階功能 |
 | **💬 Strata: Qwen3.8-flash-next LLM** | 智慧助理與提示詞優化 | **🟡 介面與架構就緒<br>推論端點待對接** | • 現代化對話聊天室 (`gr.Chatbot`)<br>• 系統提示詞設定 (預設 MiniMax 專用分鏡提示詞工程師角色)<br>• 溫度 (Temperature)、Top-P、Max Tokens 調節滑桿<br>• 對話控制操作 (清空、重試、撤銷)<br>• 本地 Echo 回應處理器 (用於前端排版、對話流與狀態流轉測試)<br>• 專屬 Strata 管理員 Tab (繼承 `BaseAdminTab`，支援後端端點 URL、API Key 憑證與模型切換) | • 實體 LLM API 串流對接：本機 Ollama / vLLM 或 OpenAI 相容 API (`/v1/chat/completions` SSE 串流)<br>• MiniMax 提示詞優化器 (Prompt Refiner) 一鍵聯動 (產出提示詞一鍵發送至 I2V/T2V 欄位)<br>• 對話歷程儲存與 Markdown / JSON 匯出 |
 | **⚙️ 階層式管理員系統 (Admin Tab)** | 系統運維與後端控制 | **✅ 100% 完整就緒** | • 物件導向階層設計 (`BaseAdminTab` -> `ComfyUIAdminTab` -> 各模組專屬 Tab)<br>• 嵌入各模組 Tab 內部，操作直覺不孤立<br>• 伺服器狀態維護模式開關 (UPDATING / OK)<br>• Dual-Stack IPv4-mapped IPv6 (`::ffff:127.0.0.1`) 自動正規化免白名單登入<br>• 後端進程重啟與 GPU 顯存釋放 (Purge VRAM)<br>• 跨裝置任務監控、詳情檢視與強制終止 | • 系統效能圖表歷史追蹤 (Prometheus/Grafana 導出) |
 
@@ -99,7 +99,7 @@ flowchart TD
     UpscalerV -->|"包含"| UpAdmin
     StrataV -->|"包含"| StAdmin
     MiniMaxV -->|"REST / WS"| ComfyUI
-    UpscalerV -.->|"超解析工作流 (待接)"| ComfyUI
+    UpscalerV -->|"超解析工作流 (utility-gan_upscaler)"| ComfyUI
     StrataV -.->|"SSE 串流 (待接)"| LLM
 ```
 
@@ -239,19 +239,23 @@ F:\program_file\AI_webUI\
 │       ├── __init__.py
 │       └── view.py                # AdminPanelView
 ├── outputs/                       # 生成影片下載目錄與 task_history.json 保存庫
+├── e2e_tests/                     # 端到端 (E2E) 整合測試套件目錄
+│   ├── minimax_test_e2e.py        # MiniMax-H3 全生命週期真實使用者 E2E 測試
+│   └── upscaler_test_e2e.py       # Video Upscaler 超解析全生命週期 E2E 測試
 ├── run.bat                        # Windows 一鍵啟動 WebUI 批次檔 (Port 7860)
 ├── run_dev.bat                    # 開發熱重載啟動批次檔
-├── run_tests.bat                  # 全自動測試套件執行腳本
-├── test_e2e.py                    # 端到端整合測試套件
+├── run_tests.bat                  # 全自動測試套件執行腳本 (Unit Tests + 2x E2E Tests)
+├── test_e2e.py                    # 端到端整合測試向下相容入口
 ├── spec.md                        # 專案需求與功能詳細規格文件
 ├── requirements.txt               # 專案 Python 相依套件列表
-└── tests/                         # 單元測試目錄 (87 項測試 100% 通過)
+└── tests/                         # 單元測試目錄 (94 項測試 100% 通過)
     ├── test_admin_tabs.py         # 測試管理員 Tab 繼承架構、IP 正規化與組件生成
     ├── test_app_state.py          # 測試 UI 初始化、工作階段恢復、定時輪詢、中斷觸發
     ├── test_comfy_client.py       # 測試伺服器探針、上傳、下載、佇列中斷邏輯
     ├── test_config.py             # 測試 17k+5 幀數吸附、16 像素對齊、品質檔次正規化
     ├── test_logger.py             # 測試日誌輸出與格式器
     ├── test_task_manager.py       # 測試多裝置任務隔離、背景執行緒生命週期與中斷
+    ├── test_upscaler.py           # 測試超解析模型掃描、工作流拓撲與 UI 綁定
     └── test_workflow_builder.py   # 測試 I2V, T2V, R2V 工作流節點拓撲正確性
 ```
 
@@ -354,13 +358,19 @@ set_server_status(SERVER_STATUS_OK)
 
 ## 🧪 自動化測試與品質保證
 
-專案具備健全的測試體系，涵蓋 87 項單元測試與端到端 (E2E) 測試。
+專案具備健全的三階段測試體系，涵蓋 94 項單元測試與雙核心端到端 (E2E) 測試套件。
 
 ### 一鍵執行所有測試
-雙擊執行專案根目錄下的 `run_tests.bat`：
+雙擊執行專案根目錄下的 `run_tests.bat`，系統將自動依序執行三階段驗證：
 ```cmd
 F:\program_file\AI_webUI\run_tests.bat
 ```
+執行階段包含：
+1. `[1/3] Running Unit Tests (pytest)...`：94 項單元測試 100% 通過
+2. `[2/3] Running MiniMax End-to-End (E2E) Test Suite...`：MiniMax 8 階段使用者生命週期測試
+3. `[3/3] Running Video Upscaler End-to-End (E2E) Test Suite...`：Upscaler 8 階段使用者生命週期測試
+
+---
 
 ### 1. 單元測試 (pytest)
 ```cmd
@@ -371,18 +381,36 @@ pytest tests/ -v
 - `test_app_state.py`：驗證多裝置會話恢復、背景輪詢定時器、中斷任務事件、移除自訂尺寸防呆機制。
 - `test_comfy_client.py`：驗證 ComfyUI 探針、佇列中斷 API、素材上傳、影片二進位串流下載。
 - `test_config.py`：驗證 $17k + 5$ 幀數換算定律、16/32 像素對齊、百萬像素解析度換算。
+- `test_logger.py`：驗證日誌輸出與格式器。
 - `test_task_manager.py`：驗證嚴格裝置隔離、執行緒安全佇列、工作階段持久化。
+- `test_upscaler.py`：驗證超解析模型掃描、工作流拓撲生成與 UI 視圖綁定。
 - `test_workflow_builder.py`：驗證 I2V, T2V, R2V 工作流 JSON 節點拓撲正確性。
 
-### 2. 端到端整合測試 (E2E)
+---
+
+### 2. 端到端整合測試套件 (e2e_tests/)
+在不依賴外部即時 GPU 運算的情況下，透過高仿真 In-Process Mock ComfyUI 伺服器，模擬真實使用者透過瀏覽器開啟 WebUI 操作的完整生命週期：
+
+#### (1) MiniMax 影片生成端到端測試 (`e2e_tests/minimax_test_e2e.py`)
 ```cmd
-python test_e2e.py
+python e2e_tests/minimax_test_e2e.py
 ```
-在不依賴外部即時 GPU 運算的情況下，透過高仿真 In-Process Mock 伺服器驗證完整生命週期：
-1. 後端探針連線驗證
-2. 前端 WebUI 啟動與 HTTP 200 健康檢查
-3. 舊版工作階段參數自動相容升級
-4. 即時提交生成任務與 SSE / 串流進度推播
-5. MP4 檔案二進位 Magic Header 完整性校驗
-6. 歷史畫廊檢索與嚴格多裝置跨權限防洩漏驗證
-7. WebUI 與後端進程之優雅終止釋放
+- **Step 1**: 啟動 ComfyUI 後端與連線驗證 (`/system_stats`)
+- **Step 2**: 前端 WebUI 伺服器啟動與 HTTP 200 健康檢查
+- **Step 3**: 模擬使用者載入網頁與會話還原（舊版相容性與下拉選單正規化）
+- **Step 4 & 5**: 發起即時 I2V 生成請求（自適應尺寸計算）並監聽串流進度推播直到 100% 完成
+- **Step 6**: 使用者下載生成之 MP4 影片，校驗二進位 Magic Header (`ftyp` / `isom`)
+- **Step 7**: 歷史畫廊檢索與多裝置隔離驗證（包含任務刪除與跨裝置防洩漏）
+- **Step 8**: 優雅關閉 WebUI 與後端伺服器
+
+#### (2) Video Upscaler 超解析端到端測試 (`e2e_tests/upscaler_test_e2e.py`)
+```cmd
+python e2e_tests/upscaler_test_e2e.py
+```
+- **Step 1**: 啟動 ComfyUI 後端與連線驗證
+- **Step 2**: 前端 WebUI 伺服器啟動與 HTTP 200 健康檢查
+- **Step 3**: 模擬使用者載入網頁並自動掃描 `upscale_models` 目錄發現可選模型
+- **Step 4 & 5**: 發起影片超解析請求 (`utility-gan_upscaler.json` 6 節點拓撲驗證）並監聽串流進度直到完成
+- **Step 6**: 使用者下載放大後影片並校驗二進位標頭完整性
+- **Step 7**: 超解析專屬歷史畫廊檢索與跨裝置隔離驗證（包含任務刪除）
+- **Step 8**: 優雅關閉 WebUI 與後端伺服器

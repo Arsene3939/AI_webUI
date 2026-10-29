@@ -192,42 +192,109 @@ video {
     padding: 0 !important;
 }
 
-/* Dashboard Sidebar Styling */
-.dashboard-sidebar {
+/* Sidebar Overlay & Layout Preservation (展開時覆蓋而非擠壓原有UI) */
+.sidebar-parent,
+.sidebar-parent:has(.sidebar.open),
+.sidebar-parent:has(.sidebar.open:not(.right)),
+.sidebar-parent:has(.sidebar.open.right),
+div:has(> .sidebar.open) {
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    transition: none !important;
+}
+
+.sidebar,
+.sidebar.svelte-1uruprb,
+div[class*="sidebar"] {
     background: #0f172a !important;
     border-right: 1px solid #334155 !important;
-    padding: 12px 14px !important;
+    z-index: 1005 !important;
+    width: 260px !important;
 }
-.dashboard-radio label {
+
+.sidebar.open,
+.sidebar.open.svelte-1uruprb,
+div[class*="sidebar"].open {
+    box-shadow: 6px 0 24px rgba(0, 0, 0, 0.6) !important;
+    z-index: 1005 !important;
+}
+
+/* Mobile Sidebar Width Override (防止手機端展開佔滿全螢幕 100vw) */
+@media (max-width: 768px) {
+    .sidebar,
+    .sidebar.svelte-1uruprb,
+    div[class*="sidebar"] {
+        width: 260px !important;
+        max-width: 80vw !important;
+        left: -260px !important;
+    }
+    .sidebar.open,
+    .sidebar.open.svelte-1uruprb,
+    div[class*="sidebar"].open {
+        transform: translateX(260px) !important;
+        width: 260px !important;
+        max-width: 80vw !important;
+        box-shadow: 8px 0 28px rgba(0, 0, 0, 0.75) !important;
+    }
+    .sidebar-parent,
+    .sidebar-parent:has(.sidebar.open) {
+        padding-left: 0 !important;
+        padding-right: 0 !important;
+    }
+}
+
+/* 3 Simple Clean Options for Dashboard (無冗贅按鈕與說明) */
+.dashboard-title {
+    margin: 4px 0 12px 0 !important;
+    color: #e2e8f0 !important;
+    font-size: 1.1rem !important;
+    font-weight: 700 !important;
+}
+
+.dashboard-simple-radio {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+}
+
+.dashboard-simple-radio .wrap {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 8px !important;
+}
+
+.dashboard-simple-radio label {
+    display: flex !important;
+    align-items: center !important;
+    padding: 12px 14px !important;
     background: #1e293b !important;
     border: 1px solid #334155 !important;
     border-radius: 8px !important;
-    padding: 8px 12px !important;
-    margin-bottom: 6px !important;
+    color: #e2e8f0 !important;
+    font-size: 0.95rem !important;
+    font-weight: 500 !important;
     cursor: pointer !important;
-    transition: all 0.2s ease !important;
+    transition: all 0.15s ease-in-out !important;
+    margin: 0 !important;
 }
-.dashboard-radio label:hover {
+
+.dashboard-simple-radio label:hover {
     border-color: #38bdf8 !important;
     background: #253349 !important;
-}
-.dashboard-quick-buttons button {
-    margin-bottom: 6px !important;
-    text-align: left !important;
-    font-weight: 600 !important;
-}
-.dashboard-accordion {
-    border: 1.5px solid #334155 !important;
-    border-radius: 10px !important;
-    background: #0f172a !important;
-    margin-bottom: 12px !important;
-}
-.dashboard-accordion > .label-wrap {
-    background: #1e293b !important;
-    padding: 8px 14px !important;
-    border-radius: 8px !important;
     color: #38bdf8 !important;
-    font-weight: 700 !important;
+}
+
+.dashboard-simple-radio label.selected,
+.dashboard-simple-radio label:has(input:checked) {
+    border-color: #38bdf8 !important;
+    background: #0284c7 !important;
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    box-shadow: 0 2px 8px rgba(2, 132, 199, 0.35) !important;
+}
+
+.dashboard-simple-radio input[type="radio"] {
+    display: none !important;
 }
 """
 

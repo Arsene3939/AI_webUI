@@ -106,7 +106,7 @@ class TestAdminTabHierarchy:
 
 class TestDashboardSidebar:
     def test_sidebar_dashboard_structure(self):
-        """Ensures Dashboard uses gr.Sidebar and no dropdowns."""
+        """Ensures Dashboard uses gr.Sidebar with 3 simple options and no dropdowns."""
         from components.dashboard_sidebar import (
             DashboardNavComponent,
             MODULE_MINIMAX,
@@ -120,9 +120,11 @@ class TestDashboardSidebar:
 
             assert isinstance(comp.sidebar, gr.Sidebar)
             assert isinstance(comp.module_selector, gr.Radio)
-            assert comp.btn_minimax is not None
-            assert comp.btn_upscaler is not None
-            assert comp.btn_strata is not None
             # Verify no dropdown is used for module selection
             assert not isinstance(comp.module_selector, gr.Dropdown)
+            # Verify exactly 3 simple options
+            assert len(comp.module_selector.choices) == 3
+            actual_choices = [c[1] if isinstance(c, tuple) else c for c in comp.module_selector.choices]
+            assert actual_choices == [MODULE_MINIMAX, MODULE_UPSCALER, MODULE_STRATA]
+
 

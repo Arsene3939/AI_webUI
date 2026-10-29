@@ -17,6 +17,8 @@ from config import (
     WEBUI_PORT,
     OUTPUT_DIR,
     get_lan_ip,
+    ASPECT_RATIOS,
+    QUALITY_CHOICES,
 )
 from task_manager import task_manager
 from logger import get_logger
@@ -52,7 +54,7 @@ from views.minimax.tabs import (
 from views.minimax.tabs.i2v_tab import handle_i2v_generate
 from views.minimax.tabs.t2v_tab import handle_t2v_generate
 from views.minimax.tabs.r2v_tab import handle_r2v_generate
-from views.upscaler.view import UpscalerView
+from views.upscaler.view import UpscalerView, handle_upscale_generate
 from views.strata.view import StrataView
 from views.admin.view import AdminPanelView
 
@@ -167,14 +169,15 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
         outputs=[minimax_container, upscaler_container, strata_container],
     )
 
-    # 7. Auto poll timer for backend status
+    # 7. Auto poll timer for backend status and active task polling
     backend_poll_timer = gr.Timer(value=0.5)
+    task_poll_timer = gr.Timer(value=1.0)
     toolbar_comp.register_events(timer=backend_poll_timer)
     header_comp.register_toggle_events()
 
     # 8. Register events for each module (including each module's admin tab)
     minimax_view.register_events(session_ctx)
-    upscaler_view.register_events(session_ctx)
+    upscaler_view.register_events(session_ctx, poll_timer=task_poll_timer)
     strata_view.register_events(session_ctx)
 
     # 9. Super User dynamic visibility on page load (updates all admin tabs across views)
@@ -402,7 +405,6 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
     )
 
     # 13. Auto-poll active task progress every 1s
-    task_poll_timer = gr.Timer(value=1.0)
     task_poll_timer.tick(
         poll_active_task_progress,
         inputs=[device_id_state, session_task_state],

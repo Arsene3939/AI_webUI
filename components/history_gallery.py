@@ -8,11 +8,13 @@ import gradio as gr
 from task_manager import task_manager
 
 
-def get_history_dropdown_choices(device_id: Optional[str]) -> List[Tuple[str, str]]:
+def get_history_dropdown_choices(device_id: Optional[str], task_type: Optional[str] = None) -> List[Tuple[str, str]]:
     """Returns dropdown choices for completed tasks belonging to the specified device."""
     if not device_id:
         return [("— 暫無歷史紀錄 —", "")]
     completed = task_manager.get_completed_tasks_for_device(device_id)
+    if task_type:
+        completed = [t for t in completed if t.task_type == task_type]
     if not completed:
         return [("— 暫無歷史紀錄 —", "")]
     choices = []
@@ -47,14 +49,14 @@ def on_select_history_item(selected_task_id: str, device_id: Optional[str]) -> T
     return task.video_path, info_md
 
 
-def on_delete_history_item(selected_task_id: str, device_id: Optional[str]):
+def on_delete_history_item(selected_task_id: str, device_id: Optional[str], task_type: Optional[str] = None):
     """Deletes the selected historical task, cleans up storage, and refreshes the gallery."""
     if not selected_task_id:
-        choices = get_history_dropdown_choices(device_id)
+        choices = get_history_dropdown_choices(device_id, task_type=task_type)
         return gr.update(choices=choices), None, "選擇上方任務查看詳細資訊與播放。"
 
     task_manager.delete_task(selected_task_id, device_id=device_id)
-    choices = get_history_dropdown_choices(device_id)
+    choices = get_history_dropdown_choices(device_id, task_type=task_type)
     new_value = choices[0][1] if choices and choices[0][1] else ""
 
     if new_value:
@@ -67,7 +69,8 @@ def on_delete_history_item(selected_task_id: str, device_id: Optional[str]):
 class HistoryGalleryComponent:
     """Encapsulates history gallery tab and events."""
 
-    def __init__(self):
+    def __init__(self, task_type: Optional[str] = None):
+        self.task_type = task_type
         self.refresh_btn: Optional[gr.Button] = None
         self.dropdown: Optional[gr.Dropdown] = None
         self.delete_btn: Optional[gr.Button] = None
@@ -78,7 +81,7 @@ class HistoryGalleryComponent:
         with gr.Row():
             self.refresh_btn = gr.Button("🔄 刷新歷史紀錄", variant="secondary", scale=1)
             self.dropdown = gr.Dropdown(
-                choices=get_history_dropdown_choices(None),
+                choices=get_history_dropdown_choices(None, task_type=self.task_type),
                 value="",
                 label="選取歷史任務",
                 scale=6,
@@ -97,7 +100,7 @@ class HistoryGalleryComponent:
     def register_events(self, device_id_state: gr.BrowserState):
         """Binds history dropdown selection, refresh, and delete handlers."""
         def handle_refresh(device_id):
-            choices = get_history_dropdown_choices(device_id)
+            choices = get_history_dropdown_choices(device_id, task_type=self.task_type)
             val = choices[0][1] if choices and choices[0][1] else ""
             if val:
                 vid, info = on_select_history_item(val, device_id)
@@ -116,8 +119,11 @@ class HistoryGalleryComponent:
             outputs=[self.video_preview, self.task_info],
         )
 
+        def handle_delete(selected_task_id, device_id):
+            return on_delete_history_item(selected_task_id, device_id, task_type=self.task_type)
+
         self.delete_btn.click(
-            on_delete_history_item,
+            handle_delete,
             inputs=[self.dropdown, device_id_state],
             outputs=[self.dropdown, self.video_preview, self.task_info],
         )
