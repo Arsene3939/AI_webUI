@@ -218,6 +218,45 @@ video {
     align-items: center;
     margin-bottom: 4px;
 }
+
+/* Two-line status box styling */
+.backend-status-box {
+    min-height: 48px !important;
+    line-height: 1.5 !important;
+    display: flex !important;
+    align-items: center !important;
+    padding: 6px 12px !important;
+    margin-top: 4px !important;
+    margin-bottom: 8px !important;
+    border-radius: 8px !important;
+    background: rgba(30, 41, 59, 0.35) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    box-sizing: border-box !important;
+}
+
+.backend-status-box p {
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
+.res-display-box {
+    min-height: 44px !important;
+    line-height: 1.5 !important;
+    display: flex !important;
+    align-items: center !important;
+    padding: 8px 14px !important;
+    margin-top: 4px !important;
+    margin-bottom: 6px !important;
+    border-radius: 8px !important;
+    background: rgba(30, 41, 59, 0.45) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    box-sizing: border-box !important;
+}
+
+.res-display-box p {
+    margin: 0 !important;
+    padding: 0 !important;
+}
 """
 
 CUSTOM_HEAD_JS = """
@@ -348,7 +387,7 @@ def build_progress_html(task_or_msg) -> str:
 
     return f"""
     <div style="width: 100%; margin-bottom: 8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
-        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px; font-size: 0.9rem; font-weight: 500; color: #334155;">
+        <div style="display: flex; justify-content: space-between; align-items: center; min-height: 44px; margin-bottom: 6px; font-size: 0.9rem; font-weight: 500; color: #334155; box-sizing: border-box;">
             <div style="flex: 1; min-width: 0; min-height: 2.7em; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; padding-right: 8px;">{msg}</div>
             <div style="flex-shrink: 0; font-weight: 700; color: #b45309; font-size: 0.95rem; line-height: 1.35;">{pct}%</div>
         </div>
@@ -1436,7 +1475,7 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
         start_backend_btn = gr.Button("⚡ 檢查後端模型狀態...", variant="secondary", scale=9)
         stop_backend_btn = gr.Button("🛑", variant="stop", scale=1, min_width=50)
 
-    backend_status_msg = gr.Markdown("")
+    backend_status_msg = gr.Markdown("", elem_classes=["backend-status-box"])
 
     # Auto poll backend status every 0.5s to dynamically color and label the button
     auto_timer = gr.Timer(value=0.5)
@@ -1516,32 +1555,41 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                             choices=I2V_ASPECT_RATIOS,
                             value=ORIGINAL_RATIO_LABEL,
                             label="長寬比",
-                            scale=3,
+                            scale=1,
                             filterable=False,
                         )
                         i2v_quality_level = gr.Dropdown(
                             choices=QUALITY_CHOICES,
                             value=DEFAULT_QUALITY_LEVEL,
                             label="畫質等級",
-                            scale=3,
+                            scale=1,
                             filterable=False,
                         )
-                        i2v_res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP)", scale=3)
 
-                    # Row 2: Duration, Seed, Random (Spec 4)
+                    # Output resolution dedicated 2-line display card
+                    i2v_res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP)", elem_classes=["res-display-box"])
+
+                    # Row 2: Duration, Steps, FPS (Basic Parameters)
                     with gr.Row():
                         i2v_duration = gr.Slider(
                             minimum=1.0, maximum=15.0, value=2.0, step=0.5,
-                            label="影片時長 (秒)", scale=3
+                            label="影片時長 (秒)", scale=1
                         )
-                        i2v_seed = gr.Number(value=1, precision=0, label="隨機種子", scale=2)
-                        i2v_rand_btn = gr.Button("🎲 隨機", scale=1)
+                        i2v_steps = gr.Slider(
+                            minimum=1, maximum=50, value=20, step=1,
+                            label="取樣步數", scale=1
+                        )
+                        i2v_fps = gr.Slider(
+                            minimum=12, maximum=60, value=24, step=1,
+                            label="影格率 (FPS)", scale=1
+                        )
 
                     with gr.Accordion("⚙️ 進階參數", open=False):
                         with gr.Row():
-                            i2v_steps = gr.Slider(minimum=1, maximum=50, value=20, step=1, label="取樣步數")
+                            i2v_seed = gr.Number(value=1, precision=0, label="隨機種子", scale=4)
+                            i2v_rand_btn = gr.Button("🎲 隨機", scale=1)
+                        with gr.Row():
                             i2v_denoise = gr.Slider(minimum=0.1, maximum=1.0, value=1.0, step=0.05, label="去噪強度")
-                            i2v_fps = gr.Slider(minimum=12, maximum=60, value=24, step=1, label="影格率 (FPS)")
                         with gr.Row():
                             i2v_sampler = gr.Dropdown(choices=SAMPLER_CHOICES, value="res_multistep", label="取樣器", filterable=False)
                             i2v_scheduler = gr.Dropdown(choices=SCHEDULER_CHOICES, value="simple", label="調度器", filterable=False)
@@ -1608,32 +1656,41 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                             choices=T2V_ASPECT_RATIOS,
                             value="16:9 (橫向風景)",
                             label="長寬比",
-                            scale=3,
+                            scale=1,
                             filterable=False,
                         )
                         t2v_quality_level = gr.Dropdown(
                             choices=QUALITY_CHOICES,
                             value=DEFAULT_QUALITY_LEVEL,
                             label="畫質等級",
-                            scale=3,
+                            scale=1,
                             filterable=False,
                         )
-                        t2v_res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP)", scale=3)
 
-                    # Row 2: Duration, Seed, Random (Spec 4)
+                    # Output resolution dedicated 2-line display card
+                    t2v_res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP)", elem_classes=["res-display-box"])
+
+                    # Row 2: Duration, Steps, FPS (Basic Parameters)
                     with gr.Row():
                         t2v_duration = gr.Slider(
                             minimum=1.0, maximum=15.0, value=2.0, step=0.5,
-                            label="影片時長 (秒)", scale=3
+                            label="影片時長 (秒)", scale=1
                         )
-                        t2v_seed = gr.Number(value=1, precision=0, label="隨機種子", scale=2)
-                        t2v_rand_btn = gr.Button("🎲 隨機", scale=1)
+                        t2v_steps = gr.Slider(
+                            minimum=1, maximum=50, value=20, step=1,
+                            label="取樣步數", scale=1
+                        )
+                        t2v_fps = gr.Slider(
+                            minimum=12, maximum=60, value=24, step=1,
+                            label="影格率 (FPS)", scale=1
+                        )
 
                     with gr.Accordion("⚙️ 進階參數", open=False):
                         with gr.Row():
-                            t2v_steps = gr.Slider(minimum=1, maximum=50, value=20, step=1, label="取樣步數")
+                            t2v_seed = gr.Number(value=1, precision=0, label="隨機種子", scale=4)
+                            t2v_rand_btn = gr.Button("🎲 隨機", scale=1)
+                        with gr.Row():
                             t2v_denoise = gr.Slider(minimum=0.1, maximum=1.0, value=1.0, step=0.05, label="去噪強度")
-                            t2v_fps = gr.Slider(minimum=12, maximum=60, value=24, step=1, label="影格率 (FPS)")
                         with gr.Row():
                             t2v_sampler = gr.Dropdown(choices=SAMPLER_CHOICES, value="res_multistep", label="取樣器", filterable=False)
                             t2v_scheduler = gr.Dropdown(choices=SCHEDULER_CHOICES, value="simple", label="調度器", filterable=False)
@@ -1719,32 +1776,41 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                             choices=I2V_ASPECT_RATIOS,
                             value=ORIGINAL_RATIO_LABEL,
                             label="長寬比",
-                            scale=3,
+                            scale=1,
                             filterable=False,
                         )
                         r2v_quality_level = gr.Dropdown(
                             choices=QUALITY_CHOICES,
                             value=DEFAULT_QUALITY_LEVEL,
                             label="畫質等級",
-                            scale=3,
+                            scale=1,
                             filterable=False,
                         )
-                        r2v_res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP)", scale=3)
 
-                    # Row 2: Duration, Seed, Random (Spec 4)
+                    # Output resolution dedicated 2-line display card
+                    r2v_res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP)", elem_classes=["res-display-box"])
+
+                    # Row 2: Duration, Steps, FPS (Basic Parameters)
                     with gr.Row():
                         r2v_duration = gr.Slider(
                             minimum=1.0, maximum=18.0, value=3.0, step=0.5,
-                            label="影片時長 (秒)", scale=3
+                            label="影片時長 (秒)", scale=1
                         )
-                        r2v_seed = gr.Number(value=1, precision=0, label="隨機種子", scale=2)
-                        r2v_rand_btn = gr.Button("🎲 隨機", scale=1)
+                        r2v_steps = gr.Slider(
+                            minimum=1, maximum=50, value=20, step=1,
+                            label="取樣步數", scale=1
+                        )
+                        r2v_fps = gr.Slider(
+                            minimum=12, maximum=60, value=24, step=1,
+                            label="影格率 (FPS)", scale=1
+                        )
 
                     with gr.Accordion("⚙️ 進階參數", open=False):
                         with gr.Row():
-                            r2v_steps = gr.Slider(minimum=1, maximum=50, value=20, step=1, label="取樣步數")
+                            r2v_seed = gr.Number(value=1, precision=0, label="隨機種子", scale=4)
+                            r2v_rand_btn = gr.Button("🎲 隨機", scale=1)
+                        with gr.Row():
                             r2v_denoise = gr.Slider(minimum=0.1, maximum=1.0, value=1.0, step=0.05, label="去噪強度")
-                            r2v_fps = gr.Slider(minimum=12, maximum=60, value=24, step=1, label="影格率 (FPS)")
                         with gr.Row():
                             r2v_sampler = gr.Dropdown(choices=SAMPLER_CHOICES, value="res_multistep", label="取樣器", filterable=False)
                             r2v_scheduler = gr.Dropdown(choices=SCHEDULER_CHOICES, value="simple", label="調度器", filterable=False)

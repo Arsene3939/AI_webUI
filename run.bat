@@ -8,19 +8,17 @@ set "PYTHONUTF8=1"
 if not exist "%PYTHON_EXE%" (
     echo [ERROR] Python not found at:
     echo %PYTHON_EXE%
-    echo Please verify the Comfy-Desktop path.
     pause
     exit /b 1
 )
 
 echo ==========================================================
-echo Starting MiniMax-H3 Gradio WebUI...
-echo Path: %~dp0
-echo Python: %PYTHON_EXE%
+echo Starting MiniMax-H3 Gradio WebUI in Auto-Reload Mode...
+echo (Changes to .py files will automatically reload the webpage)
 echo ==========================================================
 echo.
 
-"%PYTHON_EXE%" app.py
+"%PYTHON_EXE%" -m gradio app.py
 
 if errorlevel 1 (
     echo.
