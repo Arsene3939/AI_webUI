@@ -354,10 +354,10 @@ class TaskManager:
         logger.info("Task %s explicitly interrupted.", task_id)
         return True
 
-    def delete_task(self, task_id: Optional[str], device_id: Optional[str] = None) -> bool:
+    def delete_task(self, task_id: Optional[str], device_id: Optional[str] = None, is_admin: bool = False) -> bool:
         """
         Deletes a task from history, memory, and removes its output video from disk.
-        Strictly verifies device ownership if device_id is provided.
+        Strictly verifies device ownership unless is_admin is True or device_id is omitted.
         Returns True if task was found and deleted, False otherwise.
         """
         if not task_id:
@@ -367,7 +367,7 @@ class TaskManager:
             task = self._tasks.get(task_id)
             if not task:
                 return False
-            if device_id and not _is_same_device(task.device_id, device_id):
+            if not is_admin and device_id and not _is_same_device(task.device_id, device_id):
                 logger.warning("[TaskManager] Unauthorized delete attempt for task %s (task device: %s, caller device: %s)",
                                task_id, task.device_id, device_id)
                 return False
@@ -390,8 +390,69 @@ class TaskManager:
 
         # Atomically persist updated task history
         self._save_history()
-        logger.info("[TaskManager] Task '%s' successfully deleted (device: %s)", task_id, device_id)
+        logger.info("[TaskManager] Task '%s' successfully deleted (device: %s, is_admin: %s)", task_id, device_id, is_admin)
         return True
+
+    def get_all_tasks(
+        self,
+        device_id_filter: Optional[str] = None,
+        status_filter: Optional[str] = None,
+    ) -> List[Task]:
+        """
+        Returns all tasks across all devices, sorted newest first.
+        Supports optional filtering by device_id and status.
+        """
+        with self._lock:
+            tasks = list(self._tasks.values())
+
+        if device_id_filter and device_id_filter != "全部裝置":
+            tasks = [t for t in tasks if t.device_id == device_id_filter]
+
+        if status_filter and status_filter != "全部狀態":
+            if status_filter == "已完成":
+                tasks = [t for t in tasks if t.status == "completed"]
+            elif status_filter == "生成中/排隊中":
+                tasks = [t for t in tasks if t.status in ("running", "queued")]
+            elif status_filter == "失敗/中斷":
+                tasks = [t for t in tasks if t.status in ("failed", "interrupted")]
+
+        tasks.sort(key=lambda t: t.created_at, reverse=True)
+        return tasks
+
+    def delete_failed_and_interrupted_tasks(self) -> int:
+        """Deletes all tasks with failed or interrupted status across all devices."""
+        with self._lock:
+            target_ids = [tid for tid, t in self._tasks.items() if t.status in ("failed", "interrupted")]
+        count = 0
+        for tid in target_ids:
+            if self.delete_task(tid, is_admin=True):
+                count += 1
+        return count
+
+    def get_connected_devices_summary(self) -> List[Dict[str, Any]]:
+        """Returns aggregated summary of all known devices from task history."""
+        device_map: Dict[str, Dict[str, Any]] = {}
+        with self._lock:
+            for t in self._tasks.values():
+                d = t.device_id or "default"
+                if d not in device_map:
+                    device_map[d] = {
+                        "device_id": d,
+                        "short_id": d.split("_")[-1][:6] if "_" in d else d[:6],
+                        "task_count": 0,
+                        "completed_count": 0,
+                        "last_active": t.created_at,
+                    }
+                device_map[d]["task_count"] += 1
+                if t.status == "completed":
+                    device_map[d]["completed_count"] += 1
+                if t.created_at > device_map[d]["last_active"]:
+                    device_map[d]["last_active"] = t.created_at
+
+        summary_list = list(device_map.values())
+        summary_list.sort(key=lambda x: x["last_active"], reverse=True)
+        return summary_list
+
 
     def start_background_task(self, task: Task, prompt_graph: Dict[str, Any], server_url: Optional[str] = None):
         """Starts a detached thread to submit to ComfyUI and monitor progress."""

@@ -607,3 +607,105 @@ class TestStateRestoration:
         finally:
             set_server_status(SERVER_STATUS_OK)
 
+    def test_super_user_permission_and_admin_operations(self):
+        """Tests Super User detection from localhost and admin operations."""
+        from unittest.mock import MagicMock
+        from app import (
+            is_super_user,
+            check_super_user_visibility,
+            build_admin_status_badge,
+            build_admin_hw_dashboard_html,
+            build_admin_queue_html,
+            build_admin_devices_html,
+            get_admin_device_filter_choices,
+            get_admin_tasks_dropdown_choices,
+            on_toggle_server_status,
+            on_select_admin_task,
+            on_delete_admin_task,
+            on_clean_failed_tasks,
+        )
+        from config import SERVER_STATUS_OK, SERVER_STATUS_UPDATING, set_server_status, get_lan_ip
+
+        # 1. Super User detection
+        # Unknown / None request must strictly default to False (safe default)
+        assert is_super_user(None) is False
+
+        req_local = MagicMock()
+        req_local.client.host = "127.0.0.1"
+        assert is_super_user(req_local) is True
+
+        # Mobile device connected via Wi-Fi (e.g. 192.168.0.11) must NOT be Super User
+        req_phone = MagicMock()
+        req_phone.client.host = "192.168.0.11"
+        assert is_super_user(req_phone) is False
+
+        req_lan = MagicMock()
+        req_lan.client.host = "192.168.1.50"
+        assert is_super_user(req_lan) is False
+
+        # Host machine's own LAN IP is recognized as local
+        req_host = MagicMock()
+        req_host.client.host = get_lan_ip()
+        assert is_super_user(req_host) is True
+
+        # Page-load dynamic visibility updates
+        assert check_super_user_visibility(req_local) == {"__type__": "update", "visible": True}
+        assert check_super_user_visibility(req_phone) == {"__type__": "update", "visible": False}
+
+        # Gradio special_args type hint injection validation
+        from gradio.helpers import special_args
+        injected, _, _, _ = special_args(check_super_user_visibility, inputs=[], request=req_phone)
+        assert len(injected) == 1 and injected[0] is req_phone
+
+        # 2. Status badge & Toggle
+        set_server_status(SERVER_STATUS_OK)
+        badge_ok = build_admin_status_badge()
+        assert "正常服務中" in badge_ok
+
+        badge_up, btn_up, msg_up = on_toggle_server_status(req_local)
+        assert "維護更新中" in badge_up
+        assert "恢復正常服務" in btn_up["value"]
+
+        # LAN user cannot toggle status
+        _, _, msg_denied = on_toggle_server_status(req_lan)
+        assert "權限不足" in msg_denied
+
+        # Restore to OK
+        set_server_status(SERVER_STATUS_OK)
+
+        # 3. Hardware Dashboard HTML
+        hw_html = build_admin_hw_dashboard_html()
+        assert "記憶體" in hw_html
+        assert "GPU" in hw_html
+        assert "磁碟" in hw_html
+
+        # 4. Queue HTML & Devices HTML
+        q_html = build_admin_queue_html()
+        assert "佇列" in q_html or "運算" in q_html or "ComfyUI" in q_html
+
+        # 5. Admin Task Filtering and Deletion across devices
+        t1 = task_manager.create_task("I2V", "Admin task dev 1", {"steps": 10}, device_id="dev_user_1")
+        t2 = task_manager.create_task("T2V", "Admin task dev 2", {"steps": 15}, device_id="dev_user_2")
+        t2.status = "failed"
+
+        dev_html = build_admin_devices_html()
+        assert "裝置代碼" in dev_html
+
+        all_choices = get_admin_tasks_dropdown_choices("全部裝置", "全部狀態")
+        assert any(t1.task_id == val for _, val in all_choices)
+        assert any(t2.task_id == val for _, val in all_choices)
+
+        # Admin selects task to view parameters
+        video_p, info_md = on_select_admin_task(t1.task_id, req_local)
+        assert "Admin task dev 1" in info_md
+        assert "dev_user_1" in info_md
+
+        # Admin clean failed tasks
+        up_choices, _, clean_msg, _ = on_clean_failed_tasks("全部裝置", "全部狀態", req_local)
+        assert "已清除" in clean_msg
+        assert task_manager.get_task(t2.task_id) is None
+
+        # Admin delete specific task
+        on_delete_admin_task(t1.task_id, "全部裝置", "全部狀態", req_local)
+        assert task_manager.get_task(t1.task_id) is None
+

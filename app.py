@@ -6,6 +6,7 @@ import os
 import time
 import uuid
 import random
+import socket
 from typing import Dict, Any, Optional, Tuple, List
 from PIL import Image
 import gradio as gr
@@ -56,6 +57,11 @@ from comfy_client import (
     start_comfyui_backend,
     stop_comfyui_backend,
     upload_media_file,
+    free_comfyui_memory,
+    clear_comfyui_queue,
+    get_comfyui_queue_status,
+    get_system_dashboard_data,
+    interrupt_execution,
 )
 from task_manager import task_manager
 from logger import get_logger
@@ -464,6 +470,304 @@ def on_delete_history_item(selected_task_id, device_id):
         return gr.update(choices=choices, value=new_value), new_video, new_info
     else:
         return gr.update(choices=choices, value=""), None, "選擇上方任務查看詳細資訊與播放。"
+
+
+# --- Super User / Admin Operations (Spec Task) ---
+
+def get_local_ip_set() -> set:
+    """Returns the set of IP addresses that belong to the local host machine."""
+    ips = {"127.0.0.1", "::1", "localhost", "testclient"}
+    try:
+        hostname = socket.gethostname()
+        for ip in socket.gethostbyname_ex(hostname)[2]:
+            ips.add(ip)
+    except Exception:
+        pass
+    try:
+        ips.add(get_lan_ip())
+    except Exception:
+        pass
+    return ips
+
+
+def is_super_user(request: Optional[gr.Request] = None) -> bool:
+    """
+    Checks if client connection originates from localhost (same machine).
+    Localhost clients ('127.0.0.1', 'localhost', '::1', 'testclient', and the host's own LAN IP)
+    are granted Super User status. Remote LAN devices (e.g. mobile phones) return False.
+    """
+    if request is None:
+        return False
+    client = getattr(request, "client", None)
+    host = getattr(client, "host", "") if client else ""
+    if not host:
+        return False
+    return host in get_local_ip_set()
+
+
+def check_super_user_visibility(request: gr.Request) -> dict:
+    """Dynamically sets Admin tab visibility on page load based on client IP."""
+    return gr.update(visible=is_super_user(request))
+
+
+def build_admin_status_badge() -> str:
+    status = get_server_status()
+    if status == SERVER_STATUS_OK:
+        return (
+            '<div style="padding: 8px 16px; border-radius: 8px; background: #ecfdf5; '
+            'border: 1.5px solid #6ee7b7; color: #047857; font-weight: 700; font-size: 0.95rem;">'
+            '🟢 系統狀態：正常服務中 (OK)'
+            '</div>'
+        )
+    return (
+        '<div style="padding: 8px 16px; border-radius: 8px; background: #fff1f2; '
+        'border: 1.5px solid #fda4af; color: #e11d48; font-weight: 700; font-size: 0.95rem;">'
+        '🔧 系統狀態：維護更新中 (UPDATING)'
+        '</div>'
+    )
+
+
+def build_admin_hw_dashboard_html() -> str:
+    d = get_system_dashboard_data()
+
+    card_style = (
+        'background: #f8fafc; border: 1.5px solid #e2e8f0; border-radius: 10px; '
+        'padding: 14px 18px; flex: 1; min-width: 180px; box-shadow: 0 1px 3px rgba(0,0,0,0.03);'
+    )
+    title_style = 'font-size: 0.85rem; font-weight: 600; color: #64748b; margin-bottom: 6px;'
+    val_style = 'font-size: 1.25rem; font-weight: 700; color: #0f172a; margin-bottom: 4px;'
+    sub_style = 'font-size: 0.8rem; color: #94a3b8;'
+
+    return f"""
+    <div style="display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 8px;">
+        <div style="{card_style}">
+            <div style="{title_style}">🧠 記憶體 (RAM)</div>
+            <div style="{val_style}">{d['ram_used_gb']} / {d['ram_total_gb']} GB</div>
+            <div style="{sub_style}">可用 {d['ram_available_gb']} GB ({d['ram_percent']}%)</div>
+        </div>
+        <div style="{card_style}">
+            <div style="{title_style}">⚡ GPU 核心負載</div>
+            <div style="{val_style}">{d['gpu_util_pct']}%</div>
+            <div style="{sub_style}">晶片即時運算佔用</div>
+        </div>
+        <div style="{card_style}">
+            <div style="{title_style}">🎮 GPU 顯存 (VRAM)</div>
+            <div style="{val_style}">{d['vram_used_gb']} / {d['vram_total_gb']} GB</div>
+            <div style="{sub_style}">可用 {d['vram_free_gb']} GB ({d['vram_percent']}%)</div>
+        </div>
+        <div style="{card_style}">
+            <div style="{title_style}">💾 輸出磁碟空間</div>
+            <div style="{val_style}">{d['disk_free_gb']} GB 可用</div>
+            <div style="{sub_style}">總量 {d['disk_total_gb']} GB ({d['disk_percent']}% 已用)</div>
+        </div>
+    </div>
+    """
+
+
+def build_admin_queue_html() -> str:
+    q = get_comfyui_queue_status()
+    if not q["online"]:
+        return '<div style="padding: 12px; background: #fff1f2; border: 1.5px solid #fecdd3; border-radius: 8px; color: #e11d48; font-weight: 600;">🔴 ComfyUI 後端未連線</div>'
+
+    running = q.get("running", [])
+    pending = q.get("pending", [])
+
+    running_html = ""
+    if running:
+        p_id = running[0][1] if len(running[0]) > 1 else str(running[0])
+        running_html = f'<div style="margin-bottom: 8px; color: #1e293b;">⚡ <b>正在運算任務</b>：<code>{p_id}</code></div>'
+    else:
+        running_html = '<div style="margin-bottom: 8px; color: #64748b;">☕ 目前無正在執行的生成任務</div>'
+
+    pending_html = ""
+    if pending:
+        items = []
+        for idx, item in enumerate(pending, 1):
+            pid = item[1] if len(item) > 1 else str(item)
+            items.append(f"<li>#{idx} - <code>{pid}</code></li>")
+        pending_html = f'<div style="color: #1e293b;">⏳ <b>排隊中 ({len(pending)} 個)</b>：<ul style="margin: 4px 0 0 18px; padding: 0;">{"".join(items)}</ul></div>'
+    else:
+        pending_html = '<div style="color: #64748b;">🟢 佇列無排隊中的任務</div>'
+
+    return f"""
+    <div style="background: #f8fafc; border: 1.5px solid #e2e8f0; border-radius: 8px; padding: 14px 18px;">
+        {running_html}
+        {pending_html}
+    </div>
+    """
+
+
+def build_admin_devices_html() -> str:
+    summaries = task_manager.get_connected_devices_summary()
+    if not summaries:
+        return '<div style="padding: 12px; color: #64748b;">暫無連線裝置紀錄</div>'
+
+    rows = []
+    for s in summaries:
+        t_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(s["last_active"]))
+        rows.append(
+            f'<tr style="border-bottom: 1px solid #f1f5f9;">'
+            f'<td style="padding: 8px 12px; font-weight: 600;"><code>{s["device_id"]}</code></td>'
+            f'<td style="padding: 8px 12px;">{s["task_count"]}</td>'
+            f'<td style="padding: 8px 12px;">{s["completed_count"]}</td>'
+            f'<td style="padding: 8px 12px; color: #64748b;">{t_str}</td>'
+            f'</tr>'
+        )
+
+    return f"""
+    <table style="width: 100%; border-collapse: collapse; background: #ffffff; border: 1.5px solid #e2e8f0; border-radius: 8px; overflow: hidden; font-size: 0.9rem;">
+        <thead>
+            <tr style="background: #f8fafc; border-bottom: 1.5px solid #e2e8f0; text-align: left; color: #475569;">
+                <th style="padding: 10px 12px;">裝置代碼 (Device ID)</th>
+                <th style="padding: 10px 12px;">總任務數</th>
+                <th style="padding: 10px 12px;">成功生成</th>
+                <th style="padding: 10px 12px;">最後活躍時間</th>
+            </tr>
+        </thead>
+        <tbody>
+            {"".join(rows)}
+        </tbody>
+    </table>
+    """
+
+
+def get_admin_device_filter_choices() -> List[str]:
+    summaries = task_manager.get_connected_devices_summary()
+    dev_ids = [s["device_id"] for s in summaries if s.get("device_id")]
+    return ["全部裝置"] + dev_ids
+
+
+def get_admin_tasks_dropdown_choices(device_filter: str = "全部裝置", status_filter: str = "全部狀態") -> List[Tuple[str, str]]:
+    tasks = task_manager.get_all_tasks(device_filter, status_filter)
+    if not tasks:
+        return [("— 查無符合條件的任務 —", "")]
+
+    choices = []
+    for t in tasks:
+        t_str = time.strftime("%m/%d %H:%M", time.localtime(t.created_at))
+        short_prompt = (t.prompt[:25] + "...") if len(t.prompt) > 25 else t.prompt
+        short_dev = t.device_id.split("_")[-1][:6] if "_" in t.device_id else t.device_id[:6]
+        status_icon = "✅" if t.status == "completed" else ("⚡" if t.status == "running" else ("⏳" if t.status == "queued" else "❌"))
+        label = f"{status_icon} [{t.task_type}] ID:{short_dev} | {t_str} | {short_prompt}"
+        choices.append((label, t.task_id))
+    return choices
+
+
+def on_toggle_server_status(request: gr.Request = None):
+    if not is_super_user(request):
+        return gr.update(), gr.update(), "⚠️ 權限不足，僅限本機管理員操作"
+    cur = get_server_status()
+    new_status = SERVER_STATUS_UPDATING if cur == SERVER_STATUS_OK else SERVER_STATUS_OK
+    set_server_status(new_status)
+    btn_text = "切換為維護模式" if new_status == SERVER_STATUS_OK else "恢復正常服務"
+    badge_html = build_admin_status_badge()
+    msg = f"✅ 已成功切換為：{'🟢 正常服務中' if new_status == SERVER_STATUS_OK else '🔧 伺服器維護/更新中'}"
+    return badge_html, gr.update(value=btn_text), msg
+
+
+def on_free_vram(request: gr.Request = None):
+    if not is_super_user(request):
+        return "⚠️ 權限不足，僅限本機管理員操作"
+    ok, msg = free_comfyui_memory()
+    return msg
+
+
+def on_restart_backend(request: gr.Request = None):
+    if not is_super_user(request):
+        return "⚠️ 權限不足，僅限本機管理員操作"
+    stop_comfyui_backend()
+    time.sleep(1)
+    ok, msg = start_comfyui_backend()
+    return msg
+
+
+def on_cancel_current_task(request: gr.Request = None):
+    if not is_super_user(request):
+        return build_admin_queue_html(), "⚠️ 權限不足"
+    q = get_comfyui_queue_status()
+    running = q.get("running", [])
+    if running and len(running[0]) > 1:
+        pid = running[0][1]
+        interrupt_execution(pid)
+        time.sleep(0.5)
+        return build_admin_queue_html(), f"🛑 已送出中斷請求 (Prompt ID: {pid[:8]})"
+    return build_admin_queue_html(), "目前無正在執行的生成任務"
+
+
+def on_clear_queue(request: gr.Request = None):
+    if not is_super_user(request):
+        return build_admin_queue_html(), "⚠️ 權限不足"
+    ok, msg = clear_comfyui_queue()
+    time.sleep(0.5)
+    return build_admin_queue_html(), msg
+
+
+def on_select_admin_task(selected_task_id, request: gr.Request = None):
+    if not is_super_user(request):
+        return None, "⚠️ 權限不足"
+    if not selected_task_id:
+        return None, "請選擇上方任務"
+    task = task_manager.get_task(selected_task_id)
+    if not task:
+        return None, "⚠️ 找不到該任務紀錄"
+
+    video_path = task.video_path if task.video_path and os.path.exists(task.video_path) else None
+    t_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(task.created_at))
+    status_str = "已完成" if task.status == "completed" else ("運算中" if task.status == "running" else ("排隊中" if task.status == "queued" else "失敗/中斷"))
+
+    params = task.params or {}
+    w = params.get("width", "-")
+    h = params.get("height", "-")
+    seed = params.get("seed", "-")
+    duration = params.get("duration", "-")
+
+    info_md = f"""
+    ### 📜 任務詳細資料 (管理員檢視)
+    * **任務代碼**：`{task.task_id}`
+    * **所屬裝置**：`{task.device_id}`
+    * **任務類型**：`{task.task_type}`
+    * **當前狀態**：`{status_str}` ({task.message})
+    * **建立時間**：{t_str}
+    * **總耗時**：{task.elapsed} 秒
+    * **解析度**：`{w} x {h}`
+    * **隨機種子**：`{seed}`
+    * **影片長度**：`{duration} 秒`
+    * **產出檔案**：`{os.path.basename(task.video_path) if task.video_path else "無"}`
+    * **提示詞**：
+    ```text
+    {task.prompt}
+    ```
+    """
+    return video_path, info_md
+
+
+def on_delete_admin_task(selected_task_id, device_filter, status_filter, request: gr.Request = None):
+    if not is_super_user(request):
+        return gr.update(), None, "⚠️ 權限不足", gr.update()
+    if not selected_task_id:
+        choices = get_admin_tasks_dropdown_choices(device_filter, status_filter)
+        return gr.update(choices=choices), None, "請選擇上方任務", gr.update()
+
+    task_manager.delete_task(selected_task_id, is_admin=True)
+    choices = get_admin_tasks_dropdown_choices(device_filter, status_filter)
+    new_value = choices[0][1] if choices and choices[0][1] else ""
+
+    dev_choices = get_admin_device_filter_choices()
+    if new_value:
+        new_video, new_info = on_select_admin_task(new_value, request)
+        return gr.update(choices=choices, value=new_value), new_video, new_info, gr.update(choices=dev_choices)
+    return gr.update(choices=choices, value=""), None, "✅ 任務已成功刪除", gr.update(choices=dev_choices)
+
+
+def on_clean_failed_tasks(device_filter, status_filter, request: gr.Request = None):
+    if not is_super_user(request):
+        return gr.update(), None, "⚠️ 權限不足", gr.update()
+    count = task_manager.delete_failed_and_interrupted_tasks()
+    choices = get_admin_tasks_dropdown_choices(device_filter, status_filter)
+    dev_choices = get_admin_device_filter_choices()
+    msg = f"🧹 已清除 {count} 個失敗或中斷的任務"
+    return gr.update(choices=choices, value=""), None, msg, gr.update(choices=dev_choices)
+
 
 
 def handle_stop_generate(device_id):
@@ -1529,6 +1833,144 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                 outputs=[history_dropdown, gallery_video, gallery_info]
             )
 
+        # ==========================================
+        # TAB 5: ⚙️ 管理員操作 (Super User Only)
+        # ==========================================
+        with gr.Tab("⚙️ 管理員操作", visible=False) as admin_tab:
+            gr.Markdown("## ⚙️ 系統管理員操作台")
+
+            # --- 區塊 1: 伺服器狀態與控制 ---
+            gr.Markdown("### 🔧 伺服器運作與維護控制")
+            with gr.Row():
+                admin_status_badge = gr.HTML(build_admin_status_badge())
+                admin_toggle_status_btn = gr.Button("切換為維護模式" if get_server_status() == SERVER_STATUS_OK else "恢復正常服務", variant="secondary")
+                admin_free_vram_btn = gr.Button("🧹 釋放 GPU 顯存 (Free VRAM)", variant="secondary")
+                admin_restart_backend_btn = gr.Button("🔄 重啟後端模型服務", variant="secondary")
+            admin_op_msg = gr.Markdown("")
+
+            # --- 區塊 2: 電腦硬體資源儀表板 ---
+            gr.Markdown("### 📊 伺服器硬體資源狀態")
+            admin_hw_dashboard_html = gr.HTML(build_admin_hw_dashboard_html())
+            with gr.Row():
+                admin_refresh_hw_btn = gr.Button("🔄 刷新硬體數據", variant="secondary", scale=1)
+
+            # --- 區塊 3: 即時佇列監控 ---
+            gr.Markdown("### ⏳ 即時運算與等待佇列")
+            admin_queue_html = gr.HTML(build_admin_queue_html())
+            with gr.Row():
+                admin_cancel_current_btn = gr.Button("🛑 強制中斷當前任務", variant="stop")
+                admin_clear_queue_btn = gr.Button("🗑️ 清空等待佇列", variant="secondary")
+                admin_refresh_queue_btn = gr.Button("🔄 刷新佇列狀態", variant="secondary")
+
+            # --- 區塊 4: 全域跨裝置歷史紀錄 ---
+            gr.Markdown("### 🗂️ 全域跨裝置歷史紀錄")
+            with gr.Row():
+                admin_device_filter = gr.Dropdown(
+                    choices=get_admin_device_filter_choices(),
+                    value="全部裝置",
+                    label="篩選裝置",
+                    filterable=False,
+                    allow_custom_value=False,
+                    scale=3,
+                )
+                admin_status_filter = gr.Dropdown(
+                    choices=["全部狀態", "已完成", "生成中/排隊中", "失敗/中斷"],
+                    value="全部狀態",
+                    label="篩選狀態",
+                    filterable=False,
+                    allow_custom_value=False,
+                    scale=3,
+                )
+                admin_refresh_all_tasks_btn = gr.Button("🔄 刷新列表", variant="secondary", scale=1)
+                admin_clean_failed_btn = gr.Button("🧹 一鍵清理失敗與中斷任務", variant="secondary", scale=2)
+
+            _init_admin_choices = get_admin_tasks_dropdown_choices("全部裝置", "全部狀態")
+            with gr.Row():
+                admin_all_tasks_dropdown = gr.Dropdown(
+                    choices=_init_admin_choices,
+                    value=_init_admin_choices[0][1] if _init_admin_choices else "",
+                    label="選取歷史任務 (全部裝置)",
+                    filterable=False,
+                    allow_custom_value=False,
+                    scale=8,
+                )
+                admin_delete_task_btn = gr.Button("🗑️ 刪除此任務", variant="stop", scale=2)
+
+            with gr.Row():
+                with gr.Column(scale=1):
+                    admin_video_preview = gr.Video(label="產出影片預覽", autoplay=False)
+                with gr.Column(scale=1):
+                    admin_task_detail = gr.Markdown("請從上方選取任務檢視詳細參數")
+
+            # --- 區塊 5: 連線裝置總覽 ---
+            gr.Markdown("### 📱 連線裝置總覽")
+            admin_devices_html = gr.HTML(build_admin_devices_html())
+            admin_refresh_devices_btn = gr.Button("🔄 刷新裝置列表", variant="secondary")
+
+            # Wire up admin events
+            admin_toggle_status_btn.click(
+                on_toggle_server_status,
+                outputs=[admin_status_badge, admin_toggle_status_btn, admin_op_msg],
+            )
+            admin_free_vram_btn.click(
+                on_free_vram,
+                outputs=[admin_op_msg],
+            )
+            admin_restart_backend_btn.click(
+                on_restart_backend,
+                outputs=[admin_op_msg],
+            )
+            admin_refresh_hw_btn.click(
+                build_admin_hw_dashboard_html,
+                outputs=[admin_hw_dashboard_html],
+            )
+            admin_cancel_current_btn.click(
+                on_cancel_current_task,
+                outputs=[admin_queue_html, admin_op_msg],
+            )
+            admin_clear_queue_btn.click(
+                on_clear_queue,
+                outputs=[admin_queue_html, admin_op_msg],
+            )
+            admin_refresh_queue_btn.click(
+                build_admin_queue_html,
+                outputs=[admin_queue_html],
+            )
+            admin_device_filter.change(
+                get_admin_tasks_dropdown_choices,
+                inputs=[admin_device_filter, admin_status_filter],
+                outputs=[admin_all_tasks_dropdown],
+            )
+            admin_status_filter.change(
+                get_admin_tasks_dropdown_choices,
+                inputs=[admin_device_filter, admin_status_filter],
+                outputs=[admin_all_tasks_dropdown],
+            )
+            admin_refresh_all_tasks_btn.click(
+                get_admin_tasks_dropdown_choices,
+                inputs=[admin_device_filter, admin_status_filter],
+                outputs=[admin_all_tasks_dropdown],
+            )
+            admin_all_tasks_dropdown.change(
+                on_select_admin_task,
+                inputs=[admin_all_tasks_dropdown],
+                outputs=[admin_video_preview, admin_task_detail],
+            )
+            admin_delete_task_btn.click(
+                on_delete_admin_task,
+                inputs=[admin_all_tasks_dropdown, admin_device_filter, admin_status_filter],
+                outputs=[admin_all_tasks_dropdown, admin_video_preview, admin_task_detail, admin_device_filter],
+            )
+            admin_clean_failed_btn.click(
+                on_clean_failed_tasks,
+                inputs=[admin_device_filter, admin_status_filter],
+                outputs=[admin_all_tasks_dropdown, admin_video_preview, admin_task_detail, admin_device_filter],
+            )
+            admin_refresh_devices_btn.click(
+                build_admin_devices_html,
+                outputs=[admin_devices_html],
+            )
+
     # All outputs collected for full restore (49 components exact match)
     all_restored_outputs = [
         device_id_state,
@@ -1583,6 +2025,12 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
         restore_device_state,
         inputs=[device_id_state, session_task_state],
         outputs=all_restored_outputs,
+    )
+
+    # Super User dynamic visibility on page load (Spec Task)
+    demo.load(
+        check_super_user_visibility,
+        outputs=[admin_tab],
     )
 
     # Manual recover button triggers the exact same comprehensive restoration

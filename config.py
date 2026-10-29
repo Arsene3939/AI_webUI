@@ -25,9 +25,21 @@ WEBUI_PORT = int(os.environ.get("WEBUI_PORT", "7860"))
 SERVER_STATUS_OK = "OK"
 SERVER_STATUS_UPDATING = "UPDATING"
 SERVER_STATUS = SERVER_STATUS_OK
+SERVER_STATUS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".server_status")
 
 def get_server_status() -> str:
     """Returns current server operation status ('OK' or 'UPDATING')."""
+    test_override = os.environ.get("TEST_OVERRIDE_STATUS")
+    if test_override in (SERVER_STATUS_OK, SERVER_STATUS_UPDATING):
+        return test_override
+    if os.path.exists(SERVER_STATUS_FILE):
+        try:
+            with open(SERVER_STATUS_FILE, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content in (SERVER_STATUS_OK, SERVER_STATUS_UPDATING):
+                    return content
+        except Exception:
+            pass
     return os.environ.get("SERVER_STATUS", SERVER_STATUS)
 
 def set_server_status(status: str):
@@ -35,6 +47,11 @@ def set_server_status(status: str):
     global SERVER_STATUS
     SERVER_STATUS = status
     os.environ["SERVER_STATUS"] = status
+    try:
+        with open(SERVER_STATUS_FILE, "w", encoding="utf-8") as f:
+            f.write(status)
+    except Exception:
+        pass
 
 
 # Startup System Resource Thresholds (Spec Task 2)
@@ -427,3 +444,4 @@ def duration_to_frames(duration_seconds: float, fps: int = 24) -> int:
     """Convert duration in seconds to aligned frame count."""
     raw_frames = round(duration_seconds * fps)
     return align_frame_count(raw_frames)
+

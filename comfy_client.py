@@ -470,3 +470,156 @@ def run_and_monitor(
             pass
 
         time.sleep(2)
+
+
+def free_comfyui_memory(server_url: Optional[str] = None) -> Tuple[bool, str]:
+    """Calls ComfyUI's /free endpoint to unload models and free PyTorch VRAM."""
+    server_url = server_url or COMFY_SERVER_URL
+    try:
+        resp = requests.post(
+            f"{server_url}/free",
+            json={"unload_models": True, "free_memory": True},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            logger.info("ComfyUI memory freed successfully via /free endpoint.")
+            return True, "🟢 已成功釋放 GPU 顯存與卸載模型快取"
+        return False, f"⚠️ 釋放請求回傳狀態碼 {resp.status_code}"
+    except Exception as e:
+        logger.warning("Failed to call /free on ComfyUI: %s", e)
+        return False, f"❌ 釋放失敗: {str(e)}"
+
+
+def clear_comfyui_queue(server_url: Optional[str] = None) -> Tuple[bool, str]:
+    """Calls ComfyUI's /queue endpoint to clear all pending prompts."""
+    server_url = server_url or COMFY_SERVER_URL
+    try:
+        resp = requests.post(
+            f"{server_url}/queue",
+            json={"clear": True},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            logger.info("ComfyUI pending queue cleared successfully.")
+            return True, "🟢 已成功清空所有排隊等待中的任務"
+        return False, f"⚠️ 清空佇列回傳狀態碼 {resp.status_code}"
+    except Exception as e:
+        logger.warning("Failed to call /queue clear on ComfyUI: %s", e)
+        return False, f"❌ 清空失敗: {str(e)}"
+
+
+def get_comfyui_queue_status(server_url: Optional[str] = None) -> Dict[str, Any]:
+    """Queries ComfyUI /queue and returns structured running and pending list."""
+    server_url = server_url or COMFY_SERVER_URL
+    try:
+        resp = requests.get(f"{server_url}/queue", timeout=3)
+        if resp.status_code == 200:
+            data = resp.json()
+            running = data.get("queue_running", [])
+            pending = data.get("queue_pending", [])
+            return {
+                "online": True,
+                "running_count": len(running),
+                "pending_count": len(pending),
+                "running": running,
+                "pending": pending,
+            }
+    except Exception:
+        pass
+    return {
+        "online": False,
+        "running_count": 0,
+        "pending_count": 0,
+        "running": [],
+        "pending": [],
+    }
+
+
+def get_system_dashboard_data() -> Dict[str, Any]:
+    """Gathers comprehensive RAM, GPU, Disk, and ComfyUI status for admin dashboard."""
+    import shutil
+    data: Dict[str, Any] = {
+        "ram_total_gb": 0.0,
+        "ram_used_gb": 0.0,
+        "ram_available_gb": 0.0,
+        "ram_percent": 0.0,
+        "gpu_util_pct": 0.0,
+        "vram_total_gb": 0.0,
+        "vram_used_gb": 0.0,
+        "vram_free_gb": 0.0,
+        "vram_percent": 0.0,
+        "disk_total_gb": 0.0,
+        "disk_used_gb": 0.0,
+        "disk_free_gb": 0.0,
+        "disk_percent": 0.0,
+        "comfy_online": False,
+        "comfy_pid": None,
+        "running_count": 0,
+        "pending_count": 0,
+    }
+
+    # RAM
+    if psutil is not None:
+        try:
+            vm = psutil.virtual_memory()
+            data["ram_total_gb"] = round(vm.total / (1024 ** 3), 1)
+            data["ram_used_gb"] = round(vm.used / (1024 ** 3), 1)
+            data["ram_available_gb"] = round(vm.available / (1024 ** 3), 1)
+            data["ram_percent"] = vm.percent
+        except Exception:
+            pass
+
+    # GPU via nvidia-smi
+    gpu_found = False
+    try:
+        cmd = "nvidia-smi --query-gpu=utilization.gpu,memory.total,memory.used,memory.free --format=csv,noheader,nounits"
+        out = subprocess.check_output(cmd, shell=True, text=True, timeout=5)
+        lines = out.strip().splitlines()
+        if lines:
+            parts = [p.strip() for p in lines[0].split(",")]
+            data["gpu_util_pct"] = float(parts[0])
+            total_mb = float(parts[1])
+            used_mb = float(parts[2])
+            free_mb = float(parts[3])
+            data["vram_total_gb"] = round(total_mb / 1024.0, 1)
+            data["vram_used_gb"] = round(used_mb / 1024.0, 1)
+            data["vram_free_gb"] = round(free_mb / 1024.0, 1)
+            data["vram_percent"] = round((used_mb / total_mb) * 100, 1) if total_mb > 0 else 0.0
+            gpu_found = True
+    except Exception:
+        pass
+
+    # Fallback GPU via torch.cuda
+    if not gpu_found:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                free_b, total_b = torch.cuda.mem_get_info()
+                used_b = total_b - free_b
+                data["vram_total_gb"] = round(total_b / (1024 ** 3), 1)
+                data["vram_used_gb"] = round(used_b / (1024 ** 3), 1)
+                data["vram_free_gb"] = round(free_b / (1024 ** 3), 1)
+                data["vram_percent"] = round((used_b / total_b) * 100, 1) if total_b > 0 else 0.0
+        except Exception:
+            pass
+
+    # Disk (OUTPUT_DIR)
+    try:
+        usage = shutil.disk_usage(OUTPUT_DIR)
+        data["disk_total_gb"] = round(usage.total / (1024 ** 3), 1)
+        data["disk_used_gb"] = round(usage.used / (1024 ** 3), 1)
+        data["disk_free_gb"] = round(usage.free / (1024 ** 3), 1)
+        data["disk_percent"] = round((usage.used / usage.total) * 100, 1) if usage.total > 0 else 0.0
+    except Exception:
+        pass
+
+    # Comfy status & Queue
+    q_status = get_comfyui_queue_status()
+    data["comfy_online"] = q_status["online"]
+    data["running_count"] = q_status["running_count"]
+    data["pending_count"] = q_status["pending_count"]
+    if _COMFY_PROCESS and _COMFY_PROCESS.poll() is None:
+        data["comfy_pid"] = _COMFY_PROCESS.pid
+
+    return data
+

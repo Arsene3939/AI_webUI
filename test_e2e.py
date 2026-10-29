@@ -251,6 +251,8 @@ class E2ETestRunner:
             self.webui_url = f"http://127.0.0.1:{self.webui_port}"
             print(f"[*] Launching WebUI Server on {self.webui_url}...")
 
+            # Ensure isolated test server environment allows generation during test runs
+            os.environ["TEST_OVERRIDE_STATUS"] = "OK"
             app.launch_webui(port=self.webui_port, raise_on_error=True, prevent_thread_lock=True, quiet=True)
 
             # Probe HTTP Root (/)
