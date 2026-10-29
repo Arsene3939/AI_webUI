@@ -408,8 +408,8 @@ class TestStateRestoration:
 
         # 1. Switch to short 6-digit ID
         res = switch_manual_device_id("71c8f5", None, None)
-        assert len(all_restored_outputs) == 49
-        assert len(res) == len(all_restored_outputs) + 1  # 1 (edit_row) + 49 outputs
+        assert len(all_restored_outputs) == 55
+        assert len(res) == len(all_restored_outputs) + 1  # 1 (edit_row) + 55 outputs
         edit_row_update = res[0]
         assigned_id = res[1]
         header_update = res[3]
@@ -479,6 +479,21 @@ class TestStateRestoration:
         assert t1.cancel_event.is_set()
         assert t1.status == "interrupted"
         assert "中斷" in t1.message
+
+    def test_handle_stop_generate(self):
+        """Tests that clicking stop button halts active device task and restores button visibility (Spec 1)."""
+        from app import handle_stop_generate
+        dev_id = "test_dev_stop_action"
+        t1 = task_manager.create_task("I2V", "Task to stop", {}, device_id=dev_id)
+        t1.status = "running"
+        assert not t1.cancel_event.is_set()
+
+        st_html, gen_btn_up, stop_btn_up = handle_stop_generate(dev_id)
+        assert t1.cancel_event.is_set()
+        assert t1.status == "interrupted"
+        assert "手動中斷" in st_html
+        assert gen_btn_up.get("visible") is True
+        assert stop_btn_up.get("visible") is False
 
     def test_no_custom_dimensions_or_models_in_ui(self):
         """Ensures custom_w, custom_h and model textboxes are not present in UI (Spec Tasks 3 & 4)."""

@@ -289,6 +289,16 @@ class TaskManager:
             ]
             return sorted(tasks, key=lambda x: x.created_at, reverse=True)
 
+    def get_active_task_for_device(self, device_id: Optional[str]) -> Optional[Task]:
+        """Returns the active (queued or running) task for the specified device, if any."""
+        if not device_id:
+            return None
+        with self._lock:
+            for t in self._tasks.values():
+                if _is_same_device(t.device_id, device_id) and t.status in ("queued", "running"):
+                    return t
+            return None
+
     def interrupt_device_tasks(self, device_id: Optional[str] = None, server_url: Optional[str] = None) -> List[str]:
         """
         Interrupts any queued or running tasks for the specified device (or all devices if None).
@@ -305,15 +315,16 @@ class TaskManager:
                         t.cancel_event.set()
                         t.status = "interrupted"
                         t.stage = "interrupted"
-                        t.message = "⚠️ 任務已被新任務中斷"
+                        t.message = "⚠️ 任務已被手動中斷"
                         interrupted_ids.append(t.task_id)
                         if t.prompt_id:
                             prompts_to_cancel.append(t.prompt_id)
 
-        # Signal ComfyUI to cancel targeted jobs and perform general interrupt
+        # Signal ComfyUI to cancel targeted jobs
         for pid in prompts_to_cancel:
             interrupt_execution(prompt_id=pid, server_url=server_url)
-        interrupt_execution(server_url=server_url)
+        if not device_id:
+            interrupt_execution(server_url=server_url)
 
         if interrupted_ids:
             self._save_history()
@@ -496,10 +507,10 @@ class TaskManager:
             if task.cancel_event.is_set() or task.status == "interrupted":
                 task.status = "interrupted"
                 task.stage = "interrupted"
-                task.message = "⚠️ 任務已被新任務中斷"
+                task.message = "⚠️ 任務已中斷"
                 stop_ws.set()
                 self._save_history()
-                logger.info("[Task %s] Interrupted by newer generation request.", task.task_id)
+                logger.info("[Task %s] Interrupted.", task.task_id)
                 return
 
             elapsed = round(time.time() - start_time, 1)

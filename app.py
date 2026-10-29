@@ -48,6 +48,7 @@ from workflow_builder import (
 )
 from comfy_client import (
     check_server,
+    check_system_resources,
     start_comfyui_backend,
     stop_comfyui_backend,
     upload_media_file,
@@ -450,6 +451,17 @@ def on_delete_history_item(selected_task_id, device_id):
         return gr.update(choices=choices, value=""), None, "選擇上方任務查看詳細資訊與播放。"
 
 
+def handle_stop_generate(device_id):
+    """Handles user clicking the '停止生成' button to abort active tasks for their device (Spec 1)."""
+    interrupted = task_manager.interrupt_device_tasks(device_id=device_id)
+    logger.info("[App] User stopped generation for device '%s'. Interrupted: %s", device_id, interrupted)
+    return (
+        build_progress_html("⚠️ 任務已被手動中斷"),
+        gr.update(visible=True),
+        gr.update(visible=False),
+    )
+
+
 # --- Generation Handlers with Input Archiving & Device Isolation ---
 
 _device_last_reported_completed: Dict[str, str] = {}
@@ -488,11 +500,6 @@ def handle_i2v_generate(
     if not prompt or not prompt.strip():
         yield build_progress_html("❌ 請輸入提示詞"), None, current_session_task, device_id
         return
-
-    # Task 1: If there is an active running/queued task for this device, interrupt it immediately!
-    interrupted_ids = task_manager.interrupt_device_tasks(device_id=device_id)
-    if interrupted_ids:
-        logger.info("[I2V] Preempted previous active task(s) for device '%s': %s", device_id, interrupted_ids)
 
     aspect_ratio = normalize_aspect_ratio(aspect_ratio)
     quality_level = normalize_quality_choice(quality_level)
@@ -594,11 +601,6 @@ def handle_t2v_generate(
         yield build_progress_html("❌ 請輸入提示詞"), None, current_session_task, device_id
         return
 
-    # Task 1: If there is an active running/queued task for this device, interrupt it immediately!
-    interrupted_ids = task_manager.interrupt_device_tasks(device_id=device_id)
-    if interrupted_ids:
-        logger.info("[T2V] Preempted previous active task(s) for device '%s': %s", device_id, interrupted_ids)
-
     aspect_ratio = normalize_aspect_ratio(aspect_ratio)
     quality_level = normalize_quality_choice(quality_level)
     sampler = normalize_sampler(sampler)
@@ -693,11 +695,6 @@ def handle_r2v_generate(
     if not prompt or not prompt.strip():
         yield build_progress_html("❌ 請輸入提示詞"), None, current_session_task, device_id
         return
-
-    # Task 1: If there is an active running/queued task for this device, interrupt it immediately!
-    interrupted_ids = task_manager.interrupt_device_tasks(device_id=device_id)
-    if interrupted_ids:
-        logger.info("[R2V] Preempted previous active task(s) for device '%s': %s", device_id, interrupted_ids)
 
     aspect_ratio = normalize_aspect_ratio(aspect_ratio)
     quality_level = normalize_quality_choice(quality_level)
@@ -884,6 +881,22 @@ def restore_device_state(stored_device_id, stored_task_id):
     active_task_id = task.task_id if task else stored_task_id
     header = build_header_html(device_id=stored_device_id)
 
+    # Compute button states based on whether this device has an active running/queued task (Spec 1)
+    active_task = task_manager.get_active_task_for_device(stored_device_id)
+    is_active = active_task is not None
+    active_type = active_task.task_type if active_task else None
+
+    i2v_btn_st = gr.update(visible=False) if (is_active and active_type == "I2V") else gr.update(visible=True)
+    i2v_stop_st = gr.update(visible=True) if (is_active and active_type == "I2V") else gr.update(visible=False)
+
+    t2v_btn_st = gr.update(visible=False) if (is_active and active_type == "T2V") else gr.update(visible=True)
+    t2v_stop_st = gr.update(visible=True) if (is_active and active_type == "T2V") else gr.update(visible=False)
+
+    r2v_btn_st = gr.update(visible=False) if (is_active and active_type == "R2V") else gr.update(visible=True)
+    r2v_stop_st = gr.update(visible=True) if (is_active and active_type == "R2V") else gr.update(visible=False)
+
+    btn_updates = [i2v_btn_st, i2v_stop_st, t2v_btn_st, t2v_stop_st, r2v_btn_st, r2v_stop_st]
+
     return (
         stored_device_id,
         active_task_id,
@@ -892,6 +905,7 @@ def restore_device_state(stored_device_id, stored_task_id):
         *i2v_updates,
         *t2v_updates,
         *r2v_updates,
+        *btn_updates,
     )
 
 
@@ -915,6 +929,12 @@ def poll_active_task_progress(stored_device_id, stored_task_id):
     Automatically detects background task completion or progress for reconnected sessions,
     and updates progress bar, video player, and history dropdown without requiring manual refresh.
     """
+    default_btns = [
+        gr.update(visible=True), gr.update(visible=False),
+        gr.update(visible=True), gr.update(visible=False),
+        gr.update(visible=True), gr.update(visible=False),
+    ]
+
     if not stored_device_id:
         return (
             gr.update(),
@@ -922,9 +942,10 @@ def poll_active_task_progress(stored_device_id, stored_task_id):
             gr.update(), gr.update(),
             gr.update(), gr.update(),
             gr.update(),
+            *default_btns,
         )
 
-    task = task_manager.get_task(stored_task_id, device_id=stored_device_id)
+    task = task_manager.get_active_task_for_device(stored_device_id) or task_manager.get_task(stored_task_id, device_id=stored_device_id)
     if not task:
         task = task_manager.get_latest_task_for_device(stored_device_id)
 
@@ -935,6 +956,7 @@ def poll_active_task_progress(stored_device_id, stored_task_id):
             gr.update(), gr.update(),
             gr.update(), gr.update(),
             gr.update(),
+            *default_btns,
         )
 
     # 1. If completed, failed, or interrupted
@@ -947,6 +969,7 @@ def poll_active_task_progress(stored_device_id, stored_task_id):
                 gr.update(), gr.update(),
                 gr.update(), gr.update(),
                 gr.update(),
+                *default_btns,
             )
 
         # Mark as reported so we don't reload player continuously
@@ -962,6 +985,7 @@ def poll_active_task_progress(stored_device_id, stored_task_id):
                 gr.update(), gr.update(),
                 gr.update(), gr.update(),
                 gr.update(choices=history_choices),
+                *default_btns,
             )
         elif task.task_type == "T2V":
             return (
@@ -970,6 +994,7 @@ def poll_active_task_progress(stored_device_id, stored_task_id):
                 progress_html, video_val,
                 gr.update(), gr.update(),
                 gr.update(choices=history_choices),
+                *default_btns,
             )
         elif task.task_type == "R2V":
             return (
@@ -978,12 +1003,25 @@ def poll_active_task_progress(stored_device_id, stored_task_id):
                 gr.update(), gr.update(),
                 progress_html, video_val,
                 gr.update(choices=history_choices),
+                *default_btns,
             )
 
     # 2. Task is actively queued or running
     if task.status in ("queued", "running"):
         _device_last_reported_completed.pop(stored_device_id, None)
         progress_html = build_progress_html(task)
+
+        i2v_btn_st = gr.update(visible=False) if task.task_type == "I2V" else gr.update(visible=True)
+        i2v_stop_st = gr.update(visible=True) if task.task_type == "I2V" else gr.update(visible=False)
+
+        t2v_btn_st = gr.update(visible=False) if task.task_type == "T2V" else gr.update(visible=True)
+        t2v_stop_st = gr.update(visible=True) if task.task_type == "T2V" else gr.update(visible=False)
+
+        r2v_btn_st = gr.update(visible=False) if task.task_type == "R2V" else gr.update(visible=True)
+        r2v_stop_st = gr.update(visible=True) if task.task_type == "R2V" else gr.update(visible=False)
+
+        active_btns = [i2v_btn_st, i2v_stop_st, t2v_btn_st, t2v_stop_st, r2v_btn_st, r2v_stop_st]
+
         last_html = _device_last_status_html.get(stored_device_id)
         if last_html == progress_html:
             return (
@@ -992,6 +1030,7 @@ def poll_active_task_progress(stored_device_id, stored_task_id):
                 gr.update(), gr.update(),
                 gr.update(), gr.update(),
                 gr.update(),
+                *active_btns,
             )
         _device_last_status_html[stored_device_id] = progress_html
 
@@ -1002,6 +1041,7 @@ def poll_active_task_progress(stored_device_id, stored_task_id):
                 gr.update(), gr.update(),
                 gr.update(), gr.update(),
                 gr.update(),
+                *active_btns,
             )
         elif task.task_type == "T2V":
             return (
@@ -1010,6 +1050,7 @@ def poll_active_task_progress(stored_device_id, stored_task_id):
                 progress_html, gr.update(),
                 gr.update(), gr.update(),
                 gr.update(),
+                *active_btns,
             )
         elif task.task_type == "R2V":
             return (
@@ -1018,6 +1059,7 @@ def poll_active_task_progress(stored_device_id, stored_task_id):
                 gr.update(), gr.update(),
                 progress_html, gr.update(),
                 gr.update(),
+                *active_btns,
             )
 
     return (
@@ -1026,6 +1068,7 @@ def poll_active_task_progress(stored_device_id, stored_task_id):
         gr.update(), gr.update(),
         gr.update(), gr.update(),
         gr.update(),
+        *default_btns,
     )
 
 
@@ -1086,11 +1129,17 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
             yield gr.update(value="🟢 後端模型運作中", variant="primary"), "🟢 後端模型已經在運作中，無須重複啟動"
             return
 
+        # Pre-check computer resources before launching backend (Spec Task 2)
+        res_ok, warning_msg, _ = check_system_resources()
+        if not res_ok:
+            yield gr.update(value="⚡ 啟動後端模型", variant="secondary"), warning_msg
+            return
+
         _is_backend_starting = True
         yield gr.update(value="🟡 正在啟動後端模型...", variant="secondary"), "🟡 正在啟動後端模型，請稍候..."
 
         try:
-            ok, msg = start_comfyui_backend(COMFY_SERVER_URL)
+            ok, msg = start_comfyui_backend(COMFY_SERVER_URL, skip_resource_check=True)
         finally:
             _is_backend_starting = False
 
@@ -1161,7 +1210,9 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                             i2v_sampler = gr.Dropdown(choices=SAMPLER_CHOICES, value="res_multistep", label="取樣器", filterable=False)
                             i2v_scheduler = gr.Dropdown(choices=SCHEDULER_CHOICES, value="simple", label="調度器", filterable=False)
 
-                    i2v_btn = gr.Button("🚀 開始生成影片", variant="primary", elem_classes=["primary-btn"])
+                    with gr.Row():
+                        i2v_btn = gr.Button("🚀 開始生成影片", variant="primary", elem_classes=["primary-btn"], visible=True)
+                        i2v_stop_btn = gr.Button("🛑 停止生成", variant="stop", visible=False)
 
                 with gr.Column(scale=1):
                     i2v_status = gr.HTML(build_progress_html("🟢 準備就緒"))
@@ -1176,7 +1227,10 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
             i2v_first_frame.change(on_first_frame_change, inputs=[i2v_first_frame, i2v_quality_level], outputs=[i2v_aspect_ratio, i2v_res_info, i2v_img_badge])
 
             i2v_rand_btn.click(generate_random_seed, outputs=[i2v_seed])
-            i2v_btn.click(
+            i2v_gen_event = i2v_btn.click(
+                lambda: (gr.update(visible=False), gr.update(visible=True)),
+                outputs=[i2v_btn, i2v_stop_btn],
+            ).then(
                 handle_i2v_generate,
                 inputs=[
                     i2v_first_frame, i2v_last_frame, i2v_prompt,
@@ -1186,6 +1240,16 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                     session_task_state, device_id_state
                 ],
                 outputs=[i2v_status, i2v_output_video, session_task_state, device_id_state]
+            ).then(
+                lambda: (gr.update(visible=True), gr.update(visible=False)),
+                outputs=[i2v_btn, i2v_stop_btn],
+            )
+
+            i2v_stop_btn.click(
+                handle_stop_generate,
+                inputs=[device_id_state],
+                outputs=[i2v_status, i2v_btn, i2v_stop_btn],
+                cancels=[i2v_gen_event],
             )
 
         # ==========================================
@@ -1237,7 +1301,9 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                             t2v_sampler = gr.Dropdown(choices=SAMPLER_CHOICES, value="res_multistep", label="取樣器", filterable=False)
                             t2v_scheduler = gr.Dropdown(choices=SCHEDULER_CHOICES, value="simple", label="調度器", filterable=False)
 
-                    t2v_btn = gr.Button("🚀 開始生成影片", variant="primary", elem_classes=["primary-btn"])
+                    with gr.Row():
+                        t2v_btn = gr.Button("🚀 開始生成影片", variant="primary", elem_classes=["primary-btn"], visible=True)
+                        t2v_stop_btn = gr.Button("🛑 停止生成", variant="stop", visible=False)
 
                 with gr.Column(scale=1):
                     t2v_status = gr.HTML(build_progress_html("🟢 準備就緒"))
@@ -1249,7 +1315,10 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                 comp.change(on_resolution_change, inputs=[t2v_aspect_ratio, t2v_quality_level], outputs=[t2v_res_info])
 
             t2v_rand_btn.click(generate_random_seed, outputs=[t2v_seed])
-            t2v_btn.click(
+            t2v_gen_event = t2v_btn.click(
+                lambda: (gr.update(visible=False), gr.update(visible=True)),
+                outputs=[t2v_btn, t2v_stop_btn],
+            ).then(
                 handle_t2v_generate,
                 inputs=[
                     t2v_prompt,
@@ -1259,6 +1328,16 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                     session_task_state, device_id_state
                 ],
                 outputs=[t2v_status, t2v_output_video, session_task_state, device_id_state]
+            ).then(
+                lambda: (gr.update(visible=True), gr.update(visible=False)),
+                outputs=[t2v_btn, t2v_stop_btn],
+            )
+
+            t2v_stop_btn.click(
+                handle_stop_generate,
+                inputs=[device_id_state],
+                outputs=[t2v_status, t2v_btn, t2v_stop_btn],
+                cancels=[t2v_gen_event],
             )
 
         # ==========================================
@@ -1332,7 +1411,9 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                             r2v_sampler = gr.Dropdown(choices=SAMPLER_CHOICES, value="res_multistep", label="取樣器", filterable=False)
                             r2v_scheduler = gr.Dropdown(choices=SCHEDULER_CHOICES, value="simple", label="調度器", filterable=False)
 
-                    r2v_btn = gr.Button("🚀 開始生成影片", variant="primary", elem_classes=["primary-btn"])
+                    with gr.Row():
+                        r2v_btn = gr.Button("🚀 開始生成影片", variant="primary", elem_classes=["primary-btn"], visible=True)
+                        r2v_stop_btn = gr.Button("🛑 停止生成", variant="stop", visible=False)
 
                 with gr.Column(scale=1):
                     r2v_status = gr.HTML(build_progress_html("🟢 準備就緒"))
@@ -1347,7 +1428,10 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
             r2v_img1.change(on_first_frame_change, inputs=[r2v_img1, r2v_quality_level], outputs=[r2v_aspect_ratio, r2v_res_info, r2v_img_badge])
 
             r2v_rand_btn.click(generate_random_seed, outputs=[r2v_seed])
-            r2v_btn.click(
+            r2v_gen_event = r2v_btn.click(
+                lambda: (gr.update(visible=False), gr.update(visible=True)),
+                outputs=[r2v_btn, r2v_stop_btn],
+            ).then(
                 handle_r2v_generate,
                 inputs=[
                     r2v_prompt, r2v_img1, r2v_img2, r2v_img3, r2v_img4,
@@ -1358,6 +1442,16 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                     session_task_state, device_id_state
                 ],
                 outputs=[r2v_status, r2v_output_video, session_task_state, device_id_state]
+            ).then(
+                lambda: (gr.update(visible=True), gr.update(visible=False)),
+                outputs=[r2v_btn, r2v_stop_btn],
+            )
+
+            r2v_stop_btn.click(
+                handle_stop_generate,
+                inputs=[device_id_state],
+                outputs=[r2v_status, r2v_btn, r2v_stop_btn],
+                cancels=[r2v_gen_event],
             )
 
         # ==========================================
@@ -1426,6 +1520,10 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
         r2v_duration, r2v_seed,
         r2v_steps, r2v_denoise, r2v_fps, r2v_sampler, r2v_scheduler,
         r2v_status, r2v_output_video,
+        # Buttons (Spec 1: 6 components)
+        i2v_btn, i2v_stop_btn,
+        t2v_btn, t2v_stop_btn,
+        r2v_btn, r2v_stop_btn,
     ]
 
     # Spec Task 2: Auto-poll active task progress every 1s for reconnected sessions
@@ -1439,6 +1537,9 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
             t2v_status, t2v_output_video,
             r2v_status, r2v_output_video,
             history_dropdown,
+            i2v_btn, i2v_stop_btn,
+            t2v_btn, t2v_stop_btn,
+            r2v_btn, r2v_stop_btn,
         ]
     )
 

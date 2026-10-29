@@ -299,7 +299,8 @@ class E2ETestRunner:
 
             # Simulate user browser opening webpage (calls demo.load -> restore_device_state)
             restored = self.client.predict(legacy_device_id, legacy_task.task_id, api_name="/restore_device_state")
-            assert len(restored) == len(app.all_restored_outputs), f"Outputs mismatch: {len(restored)} vs {len(app.all_restored_outputs)}"
+            expected_api_outputs = [c for c in app.all_restored_outputs if type(c).__name__ not in ("Button", "Row")]
+            assert len(restored) == len(expected_api_outputs), f"Outputs mismatch: {len(restored)} vs {len(expected_api_outputs)}"
 
             # Verify quality level component was normalized to current QUALITY_CHOICES (avoiding dropdown crash!)
             i2v_quality_update = restored[8]  # index 8 in all_restored_outputs
@@ -316,7 +317,7 @@ class E2ETestRunner:
 
             # Simulate user manually switching device ID
             switch_res = self.client.predict("998877", legacy_device_id, None, api_name="/switch_manual_device_id")
-            assert len(switch_res) == len(app.all_restored_outputs), f"Unexpected switch output count: {len(switch_res)}"
+            assert len(switch_res) == len(expected_api_outputs), f"Unexpected switch output count: {len(switch_res)}"
 
             self.log_step(
                 "Step 3: Webpage Load & Session Restore (Dropdown Bug Fix)",

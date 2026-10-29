@@ -11,7 +11,18 @@ import requests
 import asyncio
 import websockets
 from typing import Optional, Tuple, Generator, Dict, Any
-from config import COMFY_SERVER_URL, COMFY_WS_URL, OUTPUT_DIR
+try:
+    import psutil
+except ImportError:
+    psutil = None
+from config import (
+    COMFY_SERVER_URL,
+    COMFY_WS_URL,
+    OUTPUT_DIR,
+    MIN_STARTUP_RAM_GB,
+    MAX_STARTUP_GPU_UTIL,
+    MIN_STARTUP_VRAM_GB,
+)
 from logger import get_logger
 
 logger = get_logger("ComfyClient")
@@ -34,7 +45,84 @@ def check_server(server_url: Optional[str] = None) -> Tuple[bool, str]:
         return False, "🔴 ComfyUI 未連線 (離線中)"
 
 
-def start_comfyui_backend(server_url: Optional[str] = None) -> Tuple[bool, str]:
+def check_system_resources(
+    min_ram_gb: float = MIN_STARTUP_RAM_GB,
+    max_gpu_util: float = MAX_STARTUP_GPU_UTIL,
+    min_vram_gb: float = MIN_STARTUP_VRAM_GB,
+) -> Tuple[bool, str, Dict[str, Any]]:
+    """
+    Checks if computer resources satisfy backend startup conditions (Spec Task 2):
+      - Available RAM > min_ram_gb (default 50 GB)
+      - GPU Utilization < max_gpu_util (default 20%)
+      - Available GPU VRAM > min_vram_gb (default 10 GB)
+
+    Returns:
+      (ok: bool, warning_msg: str, stats: Dict[str, Any])
+    """
+    stats: Dict[str, Any] = {
+        "ram_available_gb": None,
+        "gpu_util_pct": None,
+        "gpu_free_vram_gb": None,
+    }
+    reasons = []
+
+    # 1. Available RAM check (psutil)
+    if psutil is not None:
+        try:
+            ram_bytes = psutil.virtual_memory().available
+            ram_gb = round(ram_bytes / (1024 ** 3), 2)
+            stats["ram_available_gb"] = ram_gb
+            if ram_gb <= min_ram_gb:
+                reasons.append(f"可用記憶體 {ram_gb} GB (需 > {min_ram_gb:g} GB)")
+        except Exception as e:
+            logger.warning("Failed to query system RAM: %s", e)
+
+    # 2. GPU Utilization and Free VRAM check
+    gpu_queried = False
+    try:
+        cmd = "nvidia-smi --query-gpu=utilization.gpu,memory.free --format=csv,noheader,nounits"
+        out = subprocess.check_output(cmd, shell=True, text=True, timeout=5)
+        lines = out.strip().splitlines()
+        if lines:
+            parts = [p.strip() for p in lines[0].split(",")]
+            util_pct = float(parts[0])
+            free_vram_gb = round(float(parts[1]) / 1024.0, 2)
+            stats["gpu_util_pct"] = util_pct
+            stats["gpu_free_vram_gb"] = free_vram_gb
+            gpu_queried = True
+
+            if util_pct >= max_gpu_util:
+                reasons.append(f"GPU 佔用率 {util_pct:.1f}% (需 < {max_gpu_util:g}%)")
+            if free_vram_gb <= min_vram_gb:
+                reasons.append(f"可用 GPU 顯存 {free_vram_gb} GB (需 > {min_vram_gb:g} GB)")
+    except Exception as e:
+        logger.debug("nvidia-smi query unavailable: %s", e)
+
+    # Fallback via torch.cuda if nvidia-smi failed
+    if not gpu_queried:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                free_bytes, _ = torch.cuda.mem_get_info()
+                free_vram_gb = round(free_bytes / (1024 ** 3), 2)
+                stats["gpu_free_vram_gb"] = free_vram_gb
+                stats["gpu_util_pct"] = 0.0
+                if free_vram_gb <= min_vram_gb:
+                    reasons.append(f"可用 GPU 顯存 {free_vram_gb} GB (需 > {min_vram_gb:g} GB)")
+        except Exception as e:
+            logger.debug("torch.cuda query failed: %s", e)
+
+    if reasons:
+        msg = "⚠️ 伺服器運算資源不足：" + "；".join(reasons)
+        logger.warning("Resource check failed: %s", msg)
+        return False, msg, stats
+
+    logger.info("Resource check passed: RAM=%.2f GB, GPU Util=%s%%, Free VRAM=%s GB",
+                stats.get("ram_available_gb", 0), stats.get("gpu_util_pct"), stats.get("gpu_free_vram_gb"))
+    return True, "", stats
+
+
+def start_comfyui_backend(server_url: Optional[str] = None, skip_resource_check: bool = False) -> Tuple[bool, str]:
     """Starts the ComfyUI backend server in an independent process if not running."""
     global _COMFY_PROCESS
     server_url = server_url or COMFY_SERVER_URL
@@ -42,6 +130,11 @@ def start_comfyui_backend(server_url: Optional[str] = None) -> Tuple[bool, str]:
     if is_ok:
         logger.info("ComfyUI backend already running at %s", server_url)
         return True, "🟢 後端已經在運作中，無須重複啟動"
+
+    if not skip_resource_check:
+        res_ok, res_msg, _ = check_system_resources()
+        if not res_ok:
+            return False, res_msg
 
     main_py = os.path.join(COMFY_ROOT, "main.py")
     if not os.path.exists(main_py):
@@ -205,14 +298,15 @@ def interrupt_execution(prompt_id: Optional[str] = None, server_url: Optional[st
         except Exception:
             pass
 
-    # 2. General interrupt for any currently executing prompt
-    try:
-        gen_resp = requests.post(f"{server_url}/interrupt", json={}, timeout=3)
-        if gen_resp.status_code == 200:
-            logger.info("ComfyUI general /interrupt sent successfully")
-            success = True
-    except Exception as e:
-        logger.debug("ComfyUI general interrupt exception: %s", e)
+    else:
+        # 2. General interrupt for any currently executing prompt only if prompt_id is None
+        try:
+            gen_resp = requests.post(f"{server_url}/interrupt", json={}, timeout=3)
+            if gen_resp.status_code == 200:
+                logger.info("ComfyUI general /interrupt sent successfully")
+                success = True
+        except Exception as e:
+            logger.debug("ComfyUI general interrupt exception: %s", e)
 
     return success
 

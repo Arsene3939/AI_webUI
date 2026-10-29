@@ -21,6 +21,27 @@ COMFY_WS_URL = COMFY_SERVER_URL.replace("http://", "ws://").replace("https://", 
 WEBUI_HOST = os.environ.get("WEBUI_HOST", "0.0.0.0")
 WEBUI_PORT = int(os.environ.get("WEBUI_PORT", "7860"))
 
+# Server Operation Status Flag
+SERVER_STATUS_OK = "OK"
+SERVER_STATUS_UPDATING = "UPDATING"
+SERVER_STATUS = SERVER_STATUS_UPDATING
+
+def get_server_status() -> str:
+    """Returns current server operation status ('OK' or 'UPDATING')."""
+    return os.environ.get("SERVER_STATUS", SERVER_STATUS)
+
+def set_server_status(status: str):
+    """Sets current server operation status ('OK' or 'UPDATING')."""
+    global SERVER_STATUS
+    SERVER_STATUS = status
+    os.environ["SERVER_STATUS"] = status
+
+
+# Startup System Resource Thresholds (Spec Task 2)
+MIN_STARTUP_RAM_GB = float(os.environ.get("MIN_STARTUP_RAM_GB", "50.0"))
+MAX_STARTUP_GPU_UTIL = float(os.environ.get("MAX_STARTUP_GPU_UTIL", "20.0"))
+MIN_STARTUP_VRAM_GB = float(os.environ.get("MIN_STARTUP_VRAM_GB", "10.0"))
+
 # Default Models (MiniMax-H3)
 DEFAULT_UNET = "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
 DEFAULT_CLIP = "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
