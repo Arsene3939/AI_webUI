@@ -7,6 +7,9 @@ import time
 import uuid
 import random
 import socket
+import json
+import threading
+import ipaddress
 from typing import Dict, Any, Optional, Tuple, List
 from PIL import Image
 import gradio as gr
@@ -511,10 +514,49 @@ def on_delete_history_item(selected_task_id, device_id):
         return gr.update(choices=choices, value=""), None, "選擇上方任務查看詳細資訊與播放。"
 
 
-# --- Super User / Admin Operations (Spec Task) ---
+# --- Super User / Admin Operations & Admin IP List ---
+
+ADMIN_IPS_FILE = os.path.join(OUTPUT_DIR, "admin_ips.json")
+_admin_ips_lock = threading.Lock()
+
+
+def load_admin_ip_list() -> List[str]:
+    """Loads custom admin IP list from outputs/admin_ips.json."""
+    if not os.path.exists(ADMIN_IPS_FILE):
+        return []
+    try:
+        with _admin_ips_lock:
+            with open(ADMIN_IPS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return [str(ip).strip() for ip in data if str(ip).strip()]
+    except Exception as e:
+        logger.warning("Failed to load admin IP list: %s", e)
+    return []
+
+
+def save_admin_ip_list(ip_list: List[str]):
+    """Saves custom admin IP list to outputs/admin_ips.json."""
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    try:
+        with _admin_ips_lock:
+            with open(ADMIN_IPS_FILE, "w", encoding="utf-8") as f:
+                json.dump(sorted(list(set(ip_list))), f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning("Failed to save admin IP list: %s", e)
+
+
+def is_valid_ip_address(ip_str: str) -> bool:
+    """Validates IPv4 or IPv6 format."""
+    try:
+        ipaddress.ip_address(ip_str.strip())
+        return True
+    except Exception:
+        return False
+
 
 def get_local_ip_set() -> set:
-    """Returns the set of IP addresses that belong to the local host machine."""
+    """Returns the set of IP addresses that belong to the local host machine plus configured admin IPs."""
     ips = {"127.0.0.1", "::1", "localhost", "testclient"}
     try:
         hostname = socket.gethostname()
@@ -526,14 +568,15 @@ def get_local_ip_set() -> set:
         ips.add(get_lan_ip())
     except Exception:
         pass
+    for custom_ip in load_admin_ip_list():
+        ips.add(custom_ip)
     return ips
 
 
 def is_super_user(request: Optional[gr.Request] = None) -> bool:
     """
-    Checks if client connection originates from localhost (same machine).
-    Localhost clients ('127.0.0.1', 'localhost', '::1', 'testclient', and the host's own LAN IP)
-    are granted Super User status. Remote LAN devices (e.g. mobile phones) return False.
+    Checks if client connection originates from localhost or an IP in the Admin IP List.
+    Clients in the Admin IP list or local machine are granted full Admin status.
     """
     if request is None:
         return False
@@ -542,6 +585,91 @@ def is_super_user(request: Optional[gr.Request] = None) -> bool:
     if not host:
         return False
     return host in get_local_ip_set()
+
+
+def build_admin_ip_list_html() -> str:
+    """Renders HTML view of current Admin IP list."""
+    admin_ips = load_admin_ip_list()
+    lan = get_lan_ip()
+
+    default_chips = f"""
+    <span style="display: inline-block; background: #e0f2fe; color: #0369a1; padding: 4px 10px; border-radius: 6px; font-family: monospace; font-size: 0.88rem; font-weight: 600; margin: 3px;">127.0.0.1 (本機)</span>
+    <span style="display: inline-block; background: #e0f2fe; color: #0369a1; padding: 4px 10px; border-radius: 6px; font-family: monospace; font-size: 0.88rem; font-weight: 600; margin: 3px;">{lan} (本機內網)</span>
+    """
+
+    if not admin_ips:
+        custom_chips = '<span style="color: #64748b; font-size: 0.88rem; margin-left: 6px;">(目前尚未加入其他管理員 IP)</span>'
+    else:
+        chips = []
+        for ip in admin_ips:
+            chips.append(
+                f'<span style="display: inline-block; background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; padding: 4px 10px; border-radius: 6px; font-family: monospace; font-size: 0.88rem; font-weight: 600; margin: 3px;">{ip}</span>'
+            )
+        custom_chips = "".join(chips)
+
+    return f"""
+    <div style="background: #ffffff; border: 1.5px solid #e2e8f0; border-radius: 8px; padding: 14px 18px; line-height: 1.8;">
+        <div style="font-size: 0.85rem; color: #475569; font-weight: 600; margin-bottom: 6px;">固定本機權限：</div>
+        <div>{default_chips}</div>
+        <div style="font-size: 0.85rem; color: #475569; font-weight: 600; margin-top: 10px; margin-bottom: 6px;">手動授權的管理員名單：</div>
+        <div>{custom_chips}</div>
+    </div>
+    """
+
+
+def get_admin_ip_remove_choices() -> List[str]:
+    """Returns dropdown choices for removing an admin IP."""
+    ips = load_admin_ip_list()
+    return ips if ips else ["— 目前無可移除的管理員 IP —"]
+
+
+def on_add_admin_ip(new_ip: str, request: gr.Request = None):
+    """Adds a new IP to the Admin IP list."""
+    if not is_super_user(request):
+        return build_admin_ip_list_html(), gr.update(), "⚠️ 權限不足"
+
+    ip_clean = (new_ip or "").strip()
+    if not ip_clean:
+        return build_admin_ip_list_html(), gr.update(choices=get_admin_ip_remove_choices()), "⚠️ 請輸入有效的 IP 位址"
+
+    if not is_valid_ip_address(ip_clean):
+        return build_admin_ip_list_html(), gr.update(choices=get_admin_ip_remove_choices()), f"❌ '{ip_clean}' 不是正確的 IP 格式 (例如 192.168.0.11)"
+
+    local_defaults = {"127.0.0.1", "::1", "localhost", get_lan_ip()}
+    if ip_clean in local_defaults:
+        return build_admin_ip_list_html(), gr.update(choices=get_admin_ip_remove_choices()), f"ℹ️ '{ip_clean}' 本身已具有本機管理員權限，無需重複加入"
+
+    current_list = load_admin_ip_list()
+    if ip_clean in current_list:
+        return build_admin_ip_list_html(), gr.update(choices=get_admin_ip_remove_choices()), f"ℹ️ IP '{ip_clean}' 已在管理員名單中"
+
+    current_list.append(ip_clean)
+    save_admin_ip_list(current_list)
+    logger.info("[Admin] Added '%s' to admin IP list", ip_clean)
+    rem_choices = get_admin_ip_remove_choices()
+    return build_admin_ip_list_html(), gr.update(choices=rem_choices, value=rem_choices[0] if rem_choices else ""), f"✅ 已成功將 IP '{ip_clean}' 加入管理員名單"
+
+
+def on_remove_admin_ip(target_ip: str, request: gr.Request = None):
+    """Removes an IP from the Admin IP list."""
+    if not is_super_user(request):
+        return build_admin_ip_list_html(), gr.update(), "⚠️ 權限不足"
+
+    target = (target_ip or "").strip()
+    if not target or "無可移除" in target:
+        return build_admin_ip_list_html(), gr.update(choices=get_admin_ip_remove_choices()), "請從選單中選取要移除的管理員 IP"
+
+    current_list = load_admin_ip_list()
+    if target not in current_list:
+        rem_choices = get_admin_ip_remove_choices()
+        return build_admin_ip_list_html(), gr.update(choices=rem_choices), f"⚠️ IP '{target}' 不在自訂名單中"
+
+    current_list.remove(target)
+    save_admin_ip_list(current_list)
+    logger.info("[Admin] Removed '%s' from admin IP list", target)
+    rem_choices = get_admin_ip_remove_choices()
+    new_val = rem_choices[0] if rem_choices and "無可移除" not in rem_choices[0] else ""
+    return build_admin_ip_list_html(), gr.update(choices=rem_choices, value=new_val), f"✅ 已將 IP '{target}' 從管理員名單中移除"
 
 
 def check_super_user_visibility(request: gr.Request) -> dict:
@@ -1973,6 +2101,32 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
             admin_devices_html = gr.HTML(build_admin_devices_html())
             admin_refresh_devices_btn = gr.Button("🔄 刷新裝置列表", variant="secondary")
 
+            # --- 區塊 6: 管理員名單設定 ---
+            gr.Markdown("### 🛡️ 管理員名單設定")
+            gr.Markdown(
+                "在下方輸入指定裝置的 IP 位址（例如手機 Wi-Fi IP `192.168.0.11`），"
+                "加入後該裝置連線至本系統時即可直接瀏覽並操作管理員專屬功能。"
+            )
+            admin_ip_list_html = gr.HTML(build_admin_ip_list_html())
+
+            with gr.Row():
+                admin_new_ip_input = gr.Textbox(
+                    label="新增管理員 IP",
+                    placeholder="請輸入欲授權的 IP 位址，例如 192.168.0.11...",
+                    scale=7,
+                )
+                admin_add_ip_btn = gr.Button("➕ 加入名單", variant="primary", scale=2)
+
+            with gr.Row():
+                admin_remove_ip_dropdown = gr.Dropdown(
+                    choices=get_admin_ip_remove_choices(),
+                    value=get_admin_ip_remove_choices()[0] if get_admin_ip_remove_choices() else "",
+                    label="選取欲移除的管理員 IP",
+                    filterable=False,
+                    scale=7,
+                )
+                admin_remove_ip_btn = gr.Button("🗑️ 移除此 IP", variant="stop", scale=2)
+
             # Wire up admin events
             admin_toggle_status_btn.click(
                 on_toggle_server_status,
@@ -2035,6 +2189,27 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
             admin_refresh_devices_btn.click(
                 build_admin_devices_html,
                 outputs=[admin_devices_html],
+            )
+            admin_add_ip_btn.click(
+                on_add_admin_ip,
+                inputs=[admin_new_ip_input],
+                outputs=[admin_ip_list_html, admin_remove_ip_dropdown, admin_op_msg],
+            ).then(
+                lambda: "",
+                outputs=[admin_new_ip_input],
+            )
+            admin_new_ip_input.submit(
+                on_add_admin_ip,
+                inputs=[admin_new_ip_input],
+                outputs=[admin_ip_list_html, admin_remove_ip_dropdown, admin_op_msg],
+            ).then(
+                lambda: "",
+                outputs=[admin_new_ip_input],
+            )
+            admin_remove_ip_btn.click(
+                on_remove_admin_ip,
+                inputs=[admin_remove_ip_dropdown],
+                outputs=[admin_ip_list_html, admin_remove_ip_dropdown, admin_op_msg],
             )
 
     # All outputs collected for full restore (49 components exact match)

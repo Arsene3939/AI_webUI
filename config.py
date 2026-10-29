@@ -24,7 +24,7 @@ WEBUI_PORT = int(os.environ.get("WEBUI_PORT", "7860"))
 # Server Operation Status Flag
 SERVER_STATUS_OK = "OK"
 SERVER_STATUS_UPDATING = "UPDATING"
-SERVER_STATUS = SERVER_STATUS_UPDATING
+SERVER_STATUS = SERVER_STATUS_OK
 SERVER_STATUS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".server_status")
 
 def get_server_status() -> str:

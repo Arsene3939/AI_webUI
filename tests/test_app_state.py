@@ -709,3 +709,51 @@ class TestStateRestoration:
         on_delete_admin_task(t1.task_id, "全部裝置", "全部狀態", req_local)
         assert task_manager.get_task(t1.task_id) is None
 
+        # 4. Admin IP List (管理員名單) Management
+        from app import (
+            load_admin_ip_list,
+            save_admin_ip_list,
+            build_admin_ip_list_html,
+            get_admin_ip_remove_choices,
+            on_add_admin_ip,
+            on_remove_admin_ip,
+        )
+
+        try:
+            # Initially, phone IP is not admin
+            assert is_super_user(req_phone) is False
+
+            # Non-admin cannot add IP
+            html_deny, _, deny_msg = on_add_admin_ip("192.168.0.11", req_phone)
+            assert "權限不足" in deny_msg
+
+            # Admin adds phone IP (192.168.0.11)
+            html_added, rem_up, add_msg = on_add_admin_ip("192.168.0.11", req_local)
+            assert "已成功將 IP '192.168.0.11' 加入管理員名單" in add_msg
+            assert "192.168.0.11" in load_admin_ip_list()
+            assert "192.168.0.11" in html_added
+
+            # Now phone IP is recognized as super user and can view Admin tab
+            assert is_super_user(req_phone) is True
+            assert check_super_user_visibility(req_phone) == {"__type__": "update", "visible": True}
+
+            # Duplicate add rejection
+            _, _, dup_msg = on_add_admin_ip("192.168.0.11", req_local)
+            assert "已在管理員名單中" in dup_msg
+
+            # Invalid IP rejection
+            _, _, inv_msg = on_add_admin_ip("not-an-ip", req_local)
+            assert "不是正確的 IP 格式" in inv_msg
+
+            # Admin removes phone IP
+            html_removed, rem_up2, rem_msg = on_remove_admin_ip("192.168.0.11", req_local)
+            assert "已將 IP '192.168.0.11' 從管理員名單中移除" in rem_msg
+            assert "192.168.0.11" not in load_admin_ip_list()
+
+            # Phone IP is revoked
+            assert is_super_user(req_phone) is False
+            assert check_super_user_visibility(req_phone) == {"__type__": "update", "visible": False}
+
+        finally:
+            save_admin_ip_list([])
+
