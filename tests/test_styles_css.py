@@ -29,6 +29,27 @@ class TestSidebarToggleAffordance:
         assert "transform: translateX(260px) !important" in CUSTOM_CSS
 
 
+class TestFeedbackLineBoxlessGuard:
+    """Spec 2026-10-31 round 3 task 3: status-feedback Markdown lines
+    (backend status, last-frame hint, admin op messages) must render as bare
+    natural text like the task progress line — no box paint on the element,
+    and the theme's .block wrapper must not re-add a second box either."""
+
+    def test_backend_status_box_paints_no_box(self):
+        assert ".backend-status-box {" in CUSTOM_CSS
+        assert "background: transparent !important" in CUSTOM_CSS
+        assert "border: none !important" in CUSTOM_CSS
+        assert "box-shadow: none !important" in CUSTOM_CSS
+
+    def test_block_wrapper_strip_rule_present(self):
+        """gradio 的 .block 包装層必須被 :has 規則脫掉，否則又出現兩層方塊。"""
+        assert ".block:has(> .backend-status-box)" in CUSTOM_CSS
+
+    def test_dead_res_display_class_stays_removed(self):
+        """res-display-box 從未有任何元件使用（死 CSS），不准再出現。"""
+        assert "res-display-box" not in CUSTOM_CSS
+
+
 class TestDarkTextGuards:
     """Spec 2026-10-31 round 2 task 2: dark-backed UI blocks must pin their own
     text colors so a light-OS/gradio light theme can never render black-on-dark."""

@@ -128,7 +128,7 @@ QUALITY_CHOICES = [
     "9 (1.8 MP - 旗艦細緻)",
     "10 (2.0 MP - 極致高解析)",
 ]
-DEFAULT_QUALITY_LEVEL = "5 (1.0 MP - 標準推薦)"
+DEFAULT_QUALITY_LEVEL = "1 (0.2 MP - 極速預覽)"
 
 
 def normalize_quality_choice(val: Any) -> str:
@@ -155,14 +155,33 @@ def normalize_quality_choice(val: Any) -> str:
         if 1 <= num <= len(QUALITY_CHOICES):
             return QUALITY_CHOICES[num - 1]
 
-    # 4. Extract MP float from string or number and find closest choice
-    try:
-        mp = quality_level_to_mp(val)
+    # 4. Extract MP float from string or number and find closest choice.
+    #    NB: quality_level_to_mp() silently falls back to 1.0 MP for garbage, which used to
+    #    make the DEFAULT fallback below unreachable for strings (garbage mapped to the 1.0 MP
+    #    tier regardless of DEFAULT_QUALITY_LEVEL). Parse strictly here instead so unknown
+    #    values actually land on the configured default.
+    mp = _parse_mp_strict(val)
+    if mp is not None:
         return min(QUALITY_CHOICES, key=lambda c: abs(quality_level_to_mp(c) - mp))
-    except Exception:
-        pass
 
     return DEFAULT_QUALITY_LEVEL
+
+
+def _parse_mp_strict(val: Any) -> Optional[float]:
+    """MP interpretation that returns None (not a silent 1.0) for unrecognizable values."""
+    if isinstance(val, float):
+        return val
+    if isinstance(val, str):
+        # Explicit MP mention, e.g. "1.0 MP" or legacy "3 (1.0 MP - 標準)"
+        m = re.search(r"(\d+(?:\.\d+)?)\s*MP", val, re.IGNORECASE)
+        if m:
+            return float(m.group(1))
+        cleaned = val.strip()
+        try:
+            return float(cleaned)  # bare MP number e.g. "1.5"
+        except ValueError:
+            return None
+    return None
 
 
 def normalize_aspect_ratio(val: Any, default_ar: str = "16:9 (橫向風景)", allow_original: bool = True) -> str:

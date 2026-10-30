@@ -153,41 +153,40 @@ video {
     margin-bottom: 4px;
 }
 
-/* Two-line status box styling */
+/* ==================================================================
+   狀態回饋訊息（Spec 2026-10-31 任務 3）：
+   後端狀態、最後一幀提示、管理員操作訊息等 feedback 一律改成
+   「像任務進度訊息一樣」的自然文字行——不得被任何方塊包住。
+   除了把 class 本體的描繪清空，也一併脱掉 gradio 預設 .block 包装層
+   的背景/框線（截圖中的「兩層方塊」就是 class 一層 + .block 一層）。
+   ================================================================== */
 .backend-status-box {
-    min-height: 48px !important;
+    min-height: 1.6em !important;
     line-height: 1.5 !important;
-    display: flex !important;
-    align-items: center !important;
-    padding: 6px 12px !important;
-    margin-top: 4px !important;
-    margin-bottom: 8px !important;
-    border-radius: 8px !important;
-    background: rgba(30, 41, 59, 0.35) !important;
-    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    padding: 0 !important;
+    margin: 0 0 6px 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
     box-sizing: border-box !important;
+}
+
+/* elem_classes 落在 .block 的內層時，外層 .block 仍会被主題描邊/上色 ⇒ 再層方塊 */
+.block:has(> .backend-status-box) {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+}
+
+.backend-status-box .prose {
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
 }
 
 .backend-status-box p {
-    margin: 0 !important;
-    padding: 0 !important;
-}
-
-.res-display-box {
-    min-height: 44px !important;
-    line-height: 1.5 !important;
-    display: flex !important;
-    align-items: center !important;
-    padding: 8px 14px !important;
-    margin-top: 4px !important;
-    margin-bottom: 6px !important;
-    border-radius: 8px !important;
-    background: rgba(30, 41, 59, 0.45) !important;
-    border: 1px solid rgba(255, 255, 255, 0.08) !important;
-    box-sizing: border-box !important;
-}
-
-.res-display-box p {
     margin: 0 !important;
     padding: 0 !important;
 }
@@ -308,21 +307,21 @@ div:has(> .sidebar.open) {
 }
 
 /* ==================================================================
-   深色文字防呆：這些區塊自帶深色背景，无论系統/gradio 主題是白是黑，
-   內部文字一律直接指定淺色，避免白主題系統下出現「黑字壓深底」。
+   深色文字防呆：无论系統/gradio 主題是白是黑，這些區塊內部文字一律
+   直接指定淺色，避免白主題系統下出現「黑字壓深底」（整個 body 是深底）。
    ================================================================== */
 .header-card h2,
 .header-card > div {
     color: #f8fafc !important;
 }
 
-.backend-status-box,
-.res-display-box {
+.backend-status-box {
     color: #e2e8f0 !important;
+    font-size: 0.9rem !important;
+    font-weight: 500 !important;
 }
 
-.backend-status-box p,
-.res-display-box p {
+.backend-status-box p {
     color: #e2e8f0 !important;
 }
 
@@ -343,11 +342,6 @@ div:has(> .sidebar.open) {
     .header-card {
         padding: 18px 26px;
         margin-bottom: 16px;
-    }
-
-    /* Roomier button hit areas stay the same size; just let rows breathe */
-    .backend-status-box {
-        min-height: 52px !important;
     }
 }
 """

@@ -243,7 +243,12 @@ class TestChoiceNormalizers:
         assert normalize_quality_choice(1) == QUALITY_CHOICES[0]
         assert normalize_quality_choice(10) == QUALITY_CHOICES[9]
         assert normalize_quality_choice("1") == QUALITY_CHOICES[0]
-        assert normalize_quality_choice(1.0) == DEFAULT_QUALITY_LEVEL
+        # 1.0 (float) is read as megapixels -> the 1.0 MP entry, NOT the (configurable) default.
+        # (Old assertion pinned DEFAULT which happened to be the 1.0 MP entry; the default
+        # is now 「1 (0.2 MP - 極速預覽)」, so assert the MP interpretation directly.)
+        mp_choice = normalize_quality_choice(1.0)
+        assert mp_choice in QUALITY_CHOICES
+        assert "1.0 MP" in mp_choice
         assert normalize_quality_choice(None) == DEFAULT_QUALITY_LEVEL
         assert normalize_quality_choice("") == DEFAULT_QUALITY_LEVEL
         assert normalize_quality_choice("unknown_quality") == DEFAULT_QUALITY_LEVEL
