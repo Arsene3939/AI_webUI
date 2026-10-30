@@ -1,7 +1,9 @@
 """
-Unit tests for the backend-shutdown safeguard (spec task 4):
-the 🛑 toolbar stop button and the admin "restart backend" action must refuse
-to kill ComfyUI while any generation job is still queued or running.
+Unit tests for the backend-shutdown safeguard (spec task 4) and its admin override
+(spec 2026-10-31 task 1):
+the 🛑 toolbar stop button and the admin "restart backend" action must refuse to kill
+ComfyUI while jobs are queued/running for REGULAR users — but a super user's 🛑 press
+must FORCE-shutdown, interrupting every active task first.
 """
 from types import SimpleNamespace
 
@@ -120,3 +122,64 @@ class TestAdminRestartBackendGuard:
         monkeypatch.setattr(task_manager, "get_active_task_count", lambda: pytest.fail("guard ran before auth"), raising=False)
         msg = AdminManager.on_restart_backend()
         assert "權限不足" in msg
+
+
+class TestAdminForceStopBackend:
+    """Spec 2026-10-31 task 1: an admin's 🛑 press force-kills the backend, ignoring
+    queued/running tasks — but every interrupted task is marked first so history stays honest."""
+
+    def _admin_request(self):
+        return SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
+
+    @pytest.fixture
+    def toolbar(self, monkeypatch):
+        monkeypatch.setattr(comfy_toolbar, "check_server", lambda url: (True, ""))
+        recorder = []
+        monkeypatch.setattr(
+            comfy_toolbar, "stop_comfyui_backend",
+            lambda url=None: recorder.append(url) or (True, "🛑 後端模型已關閉"),
+        )
+        monkeypatch.setattr(
+            AdminManager, "is_super_user",
+            lambda request=None: (getattr(getattr(request, "client", None), "host", "") == "127.0.0.1"),
+        )
+        component = ComfyToolbarComponent()
+        component.stop_calls = recorder
+        return component
+
+    def test_force_stop_interrupts_all_tasks_then_kills_backend(self, toolbar, monkeypatch):
+        monkeypatch.setattr(
+            comfy_toolbar.task_manager, "get_active_tasks_overview",
+            lambda: _fake_running(2), raising=False,
+        )
+        interrupts = []
+        monkeypatch.setattr(
+            comfy_toolbar.task_manager, "interrupt_device_tasks",
+            lambda device_id=None, module=None: interrupts.append((device_id, module)) or ["t1", "t2"],
+            raising=False,
+        )
+        _, msg = toolbar.on_stop_backend(request=self._admin_request())
+        assert "強制關閉" in msg
+        assert "已中斷 2 個進行中的工作" in msg
+        assert interrupts == [(None, None)], "Force stop must interrupt ALL devices/modules"
+        assert toolbar.stop_calls, "Backend was not killed on the admin force path"
+
+    def test_force_stop_when_idle_shuts_down_without_interrupting(self, toolbar, monkeypatch):
+        monkeypatch.setattr(comfy_toolbar.task_manager, "get_active_tasks_overview", lambda: [], raising=False)
+        monkeypatch.setattr(
+            comfy_toolbar.task_manager, "interrupt_device_tasks",
+            lambda **kw: pytest.fail("interrupt called with no active tasks"), raising=False,
+        )
+        _, msg = toolbar.on_stop_backend(request=self._admin_request())
+        assert "後端模型已關閉" in msg
+        assert toolbar.stop_calls
+
+    def test_non_admin_request_kept_blocked_by_safeguard(self, toolbar, monkeypatch):
+        monkeypatch.setattr(
+            comfy_toolbar.task_manager, "get_active_tasks_overview",
+            lambda: _fake_running(1), raising=False,
+        )
+        stranger = SimpleNamespace(client=SimpleNamespace(host="203.0.113.9"))
+        _, msg = toolbar.on_stop_backend(request=stranger)
+        assert "無法關閉後端模型" in msg
+        assert toolbar.stop_calls == [], "Non-admin must never force-kill the backend"

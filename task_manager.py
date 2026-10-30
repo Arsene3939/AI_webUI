@@ -277,6 +277,26 @@ class TaskManager:
                     task.message = "❌ 生成失敗，請查看後端錯誤記錄。"
                     self._save_history()
                     return task
+
+                # Prompt missing from history AND from the ComfyUI queue => the job vanished
+                # (backend restarted mid-flight). Reap the zombie so the device UI frees up.
+                if task.status in ("queued", "running"):
+                    try:
+                        q_resp = requests.get(f"{server_url}/queue", timeout=5)
+                        if q_resp.status_code == 200:
+                            q_data = q_resp.json()
+                            in_queue = [
+                                item[1]
+                                for item in q_data.get("queue_running", []) + q_data.get("queue_pending", [])
+                            ]
+                            if task.prompt_id not in in_queue:
+                                task.status = "interrupted"
+                                task.stage = "interrupted"
+                                task.message = "⚠️ 此工作已不在後端佇列中（後端可能重啟過），請重新提交"
+                                self._save_history()
+                                return task
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -355,6 +375,67 @@ class TaskManager:
         """Returns ALL queued/running tasks across every device and module (backend-shutdown guard)."""
         with self._lock:
             return [t for t in self._tasks.values() if t.status in ("queued", "running")]
+
+    def get_unfinished_tasks_for_device(self, device_id: Optional[str], module: Optional[str] = None) -> List[Task]:
+        """Returns failed/interrupted tasks for the device (user-visible history, newest first)."""
+        if not device_id:
+            return []
+        with self._lock:
+            tasks = [
+                t for t in self._tasks.values()
+                if _is_same_device(t.device_id, device_id)
+                and t.status in ("failed", "interrupted")
+                and (not module or t.module == module)
+            ]
+        return sorted(tasks, key=lambda x: x.created_at, reverse=True)
+
+    def _prompt_alive_on_server(self, prompt_id: str, server_url: str = COMFY_SERVER_URL) -> bool:
+        """True if the prompt still exists in ComfyUI (history outputs or queue entries). False on any
+        connection failure — a dead/unreachable backend means the in-flight job is gone."""
+        try:
+            h_resp = requests.get(f"{server_url}/history/{prompt_id}", timeout=2)
+            if h_resp.status_code == 200:
+                history = h_resp.json().get(prompt_id, {})
+                if history.get("outputs"):
+                    return True
+            q_resp = requests.get(f"{server_url}/queue", timeout=2)
+            if q_resp.status_code == 200:
+                q_data = q_resp.json()
+                running = [item[1] for item in q_data.get("queue_running", [])]
+                pending = [item[1] for item in q_data.get("queue_pending", [])]
+                if prompt_id in running or prompt_id in pending:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def reconcile_orphaned_tasks(self, server_url: Optional[str] = None) -> int:
+        """
+        WebUI-startup reconciliation (Spec 2026-10-31 task 2): tasks reloaded as queued/running were
+        tracked by a monitor worker that no longer exists. Verify each one against ComfyUI once:
+        still queued/running there, or outputs already produced -> keep (polling sync will finish it);
+        otherwise the job died with the backend -> demote to interrupted so the device UI frees up
+        and the record becomes visible in history. Returns the number of demoted tasks.
+        """
+        server_url = server_url or COMFY_SERVER_URL
+        demoted = 0
+        with self._lock:
+            orphans = [t for t in self._tasks.values() if t.status in ("queued", "running")]
+        for t in orphans:
+            if t.prompt_id and self._prompt_alive_on_server(t.prompt_id, server_url):
+                continue
+            with self._lock:
+                if t.status not in ("queued", "running"):
+                    continue
+                t.cancel_event.set()
+                t.status = "interrupted"
+                t.stage = "interrupted"
+                t.message = "⚠️ 工作已在伺服器重啟時遺失，請重新提交"
+            demoted += 1
+        if demoted:
+            self._save_history()
+            logger.warning("Reconciled %d orphaned queued/running task(s) to interrupted at startup.", demoted)
+        return demoted
 
     def get_active_task_count(self) -> int:
         """Number of generation jobs still queued or running anywhere (backend-shutdown guard)."""
@@ -471,6 +552,18 @@ class TaskManager:
                     logger.info("[TaskManager] Deleted video file: %s", task.video_path)
                 except Exception as e:
                     logger.warning("[TaskManager] Failed to delete video file %s: %s", task.video_path, e)
+
+            # Remove archived input media (uploaded frames/videos) belonging to this task
+            try:
+                prefix = f"{task_id}_"
+                for fname in os.listdir(INPUTS_ARCHIVE_DIR):
+                    if fname.startswith(prefix):
+                        try:
+                            os.remove(os.path.join(INPUTS_ARCHIVE_DIR, fname))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
             # Remove task from in-memory tracking
             del self._tasks[task_id]
@@ -713,6 +806,8 @@ class TaskManager:
         start_time = time.time()
         last_logged_step = -1
         last_logged_stage = task.stage
+        backend_failures = 0
+        BACKEND_FAILURE_LIMIT = 10  # consecutive polls where BOTH history and queue requests fail
 
         while True:
             if task.cancel_event.is_set() or task.status == "interrupted":
@@ -749,9 +844,13 @@ class TaskManager:
                             task.task_id, task.step, task.total_steps, int(task.progress * 100), time_str)
                 last_logged_step = task.step
 
+            history_ok = False
+            queue_ok = False
+
             # 1. Check if finished or failed in ComfyUI history
             try:
                 h_resp = requests.get(f"{server_url}/history/{task.prompt_id}", timeout=5)
+                history_ok = True
                 if h_resp.status_code == 200:
                     history = h_resp.json().get(task.prompt_id, {})
                     outputs = history.get("outputs", {})
@@ -794,6 +893,7 @@ class TaskManager:
             # 2. Check queue position / running state
             try:
                 q_resp = requests.get(f"{server_url}/queue", timeout=5)
+                queue_ok = True
                 if q_resp.status_code == 200:
                     q_data = q_resp.json()
                     running = [item[1] for item in q_data.get("queue_running", [])]
@@ -825,6 +925,26 @@ class TaskManager:
                         task.message = f"⏳ 排隊中... (已等待 {time_str})"
             except Exception as e:
                 logger.debug("[Task %s] Queue poll exception: %s", task.task_id, e)
+
+            # 3. Backend-liveness watchdog: if the ComfyUI server stops answering every probe
+            #    (e.g. its terminal was killed mid-generation), abort the task instead of
+            #    spinning forever, and persist the record so it shows up in history.
+            if not history_ok and not queue_ok:
+                backend_failures += 1
+                if backend_failures >= BACKEND_FAILURE_LIMIT:
+                    task.status = "interrupted"
+                    task.stage = "interrupted"
+                    task.message = "⚠️ 後端模型已離線，任務已中止（請確認後端後重新提交）"
+                    stop_ws.set()
+                    self._save_history()
+                    logger.error(
+                        "[Task %s] Backend unreachable for %d consecutive polls at step %d/%d "
+                        "(elapsed: %s) — aborting task as interrupted.",
+                        task.task_id, backend_failures, task.step, task.total_steps, time_str,
+                    )
+                    return
+            else:
+                backend_failures = 0
 
             time.sleep(0.5)
 

@@ -30,6 +30,11 @@ class BaseAdminTab:
         self.devices_html: Optional[gr.HTML] = None
         self.refresh_devices_btn: Optional[gr.Button] = None
 
+        # Auto-refresh heartbeat for volatile admin panels (Spec 2026-10-31 round 2 task 3):
+        # hardware dashboard + devices overview every 5s; super-user-guarded so regular
+        # sessions pay only a cheap IP check per tick.
+        self.auto_refresh_timer: Optional[gr.Timer] = None
+
         self.ip_list_html: Optional[gr.HTML] = None
         self.new_ip_input: Optional[gr.Textbox] = None
         self.add_ip_btn: Optional[gr.Button] = None
@@ -48,6 +53,8 @@ class BaseAdminTab:
                 self.status_badge = gr.HTML(AdminManager.build_admin_status_badge(), scale=4)
                 self.toggle_status_btn = gr.Button("切換為維護模式", variant="stop", scale=2)
             self.op_msg = gr.Markdown("", elem_classes=["backend-status-box"])
+
+            self.auto_refresh_timer = gr.Timer(value=5.0)
 
             # 2. Hardware Resource Dashboard
             gr.Markdown("### 🖥️ 硬體資源即時狀態 (Hardware Dashboard)")
@@ -103,6 +110,22 @@ class BaseAdminTab:
             AdminManager.build_admin_devices_html,
             outputs=[self.devices_html],
         )
+
+        # Auto-refresh: hardware dashboard + connected devices every 5 seconds
+        # (psutil reads + in-memory scan: microseconds, zero impact on the GPU job).
+        if self.auto_refresh_timer is not None:
+            def auto_admin_refresh(req: gr.Request = None):
+                if not AdminManager.is_super_user(req):
+                    return gr.update(), gr.update()
+                return (
+                    AdminManager.build_admin_hw_dashboard_html(),
+                    AdminManager.build_admin_devices_html(),
+                )
+
+            self.auto_refresh_timer.tick(
+                auto_admin_refresh,
+                outputs=[self.hw_dashboard_html, self.devices_html],
+            )
 
         def add_ip_and_clear(new_ip, req: gr.Request):
             html, rem_upd, msg = AdminManager.on_add_admin_ip(new_ip, req)

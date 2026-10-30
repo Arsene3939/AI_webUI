@@ -192,7 +192,15 @@ video {
     padding: 0 !important;
 }
 
-/* Sidebar Overlay & Layout Preservation (展開時覆蓋而非擠壓原有UI) */
+/* ==================================================================
+   Sidebar Overlay & Layout Preservation (展開時覆蓋而非擠壓原有UI)
+
+   ⚠️ 只准覆蓋 .sidebar 本體：`.sidebar-parent` 是 gradio 6 包住整個 App
+   的 flex 主容器，舊版那種 class 子字串相容的寬側欄選擇器曾把整個頁面壓成
+   260px 寬（手機/電腦版窄直幅的元兇，已被防回歸測試封鎖）。寬度與定位現在
+   統一由下方一組 :not(.right) 規則處理（同時壓過 gradio 手機斷點的 100vw
+   原生規則）。
+   ================================================================== */
 .sidebar-parent,
 .sidebar-parent:has(.sidebar.open),
 .sidebar-parent:has(.sidebar.open:not(.right)),
@@ -203,18 +211,18 @@ div:has(> .sidebar.open) {
     transition: none !important;
 }
 
-.sidebar,
-.sidebar.svelte-1uruprb,
-div[class*="sidebar"] {
+.sidebar:not(.right),
+.sidebar.svelte-1uruprb:not(.right) {
     background: #0f172a !important;
     border-right: 1px solid #334155 !important;
     z-index: 1005 !important;
     width: 260px !important;
+    left: -260px !important;
 }
 
-.sidebar.open,
-.sidebar.open.svelte-1uruprb,
-div[class*="sidebar"].open {
+.sidebar.open:not(.right),
+.sidebar.open.svelte-1uruprb:not(.right) {
+    transform: translateX(260px) !important;
     box-shadow: 6px 0 24px rgba(0, 0, 0, 0.6) !important;
     z-index: 1005 !important;
 }
@@ -242,29 +250,8 @@ div[class*="sidebar"].open {
     border-color: #7dd3fc !important;
 }
 
-/* Mobile Sidebar Width Override (防止手機端展開佔滿全螢幕 100vw) */
-@media (max-width: 768px) {
-    .sidebar,
-    .sidebar.svelte-1uruprb,
-    div[class*="sidebar"] {
-        width: 260px !important;
-        max-width: 80vw !important;
-        left: -260px !important;
-    }
-    .sidebar.open,
-    .sidebar.open.svelte-1uruprb,
-    div[class*="sidebar"].open {
-        transform: translateX(260px) !important;
-        width: 260px !important;
-        max-width: 80vw !important;
-        box-shadow: 8px 0 28px rgba(0, 0, 0, 0.75) !important;
-    }
-    .sidebar-parent,
-    .sidebar-parent:has(.sidebar.open) {
-        padding-left: 0 !important;
-        padding-right: 0 !important;
-    }
-}
+/* (舊 Mobile Sidebar Width Override 區塊已移除：上方統一側欄規則已含手機端，
+   gradio 手機斷點的 100vw 原生規則由 :not(.right) 選擇器等價壓制) */
 
 /* 3 Simple Clean Options for Dashboard (無冗贅按鈕與說明) */
 .dashboard-title {
@@ -318,6 +305,50 @@ div[class*="sidebar"].open {
 
 .dashboard-simple-radio input[type="radio"] {
     display: none !important;
+}
+
+/* ==================================================================
+   深色文字防呆：這些區塊自帶深色背景，无论系統/gradio 主題是白是黑，
+   內部文字一律直接指定淺色，避免白主題系統下出現「黑字壓深底」。
+   ================================================================== */
+.header-card h2,
+.header-card > div {
+    color: #f8fafc !important;
+}
+
+.backend-status-box,
+.res-display-box {
+    color: #e2e8f0 !important;
+}
+
+.backend-status-box p,
+.res-display-box p {
+    color: #e2e8f0 !important;
+}
+
+/* ==================================================================
+   Desktop layout optimization (viewport >= 1024px).
+   Gradio 6 is mobile-first: without these rules the app renders as a
+   narrow centered column on a desktop browser. Everything below is
+   wrapped in a min-width media query, so phone/tablet layouts (<1024px)
+   are byte-for-byte unaffected.
+   ================================================================== */
+@media (min-width: 1024px) {
+    .container {
+        max-width: 1280px !important;
+        padding: 16px 32px !important;
+    }
+
+    /* Give the dashboard toggle & header a little more breathing room */
+    .header-card {
+        padding: 18px 26px;
+        margin-bottom: 16px;
+    }
+
+    /* Roomier button hit areas stay the same size; just let rows breathe */
+    .backend-status-box {
+        min-height: 52px !important;
+    }
 }
 """
 

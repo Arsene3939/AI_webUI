@@ -14,6 +14,7 @@ from comfy_client import (
     start_comfyui_backend,
     stop_comfyui_backend,
 )
+from core.admin_manager import AdminManager
 from task_manager import task_manager
 from logger import get_logger
 
@@ -76,13 +77,32 @@ class ComfyToolbarComponent:
         btn_update = self.poll_backend_status()
         yield btn_update, f"{msg}"
 
-    def on_stop_backend(self) -> Tuple[dict, str]:
+    def on_stop_backend(self, request: Optional[gr.Request] = None) -> Tuple[dict, str]:
         """Handler for stopping ComfyUI backend process.
 
-        SAFEGUARD: while any generation job is still queued/running (any device,
-        any module), the shutdown is refused — killing the backend mid-job would
-        orphan the worker and lose that user's output.
+        SAFEGUARD (regular users): while any generation job is still queued/running
+        (any device, any module), the shutdown is refused — killing the backend mid-job
+        would orphan the worker and lose that user's output.
+
+        FORCE PATH (super user / admin, Spec 2026-10-31 task 1): the admin's stop button
+        shuts the backend down unconditionally — every queued/running task is marked
+        interrupted first (so history stays honest and device UIs free up), then the
+        backend process is killed.
         """
+        if AdminManager.is_super_user(request):
+            active = task_manager.get_active_tasks_overview()
+            if active:
+                interrupted = task_manager.interrupt_device_tasks(device_id=None, module=None)
+                logger.warning(
+                    "[ComfyToolbar] Admin FORCE-stopped backend with %d active task(s): %s",
+                    len(active), interrupted,
+                )
+            ok, msg = stop_comfyui_backend(COMFY_SERVER_URL)
+            btn_update = self.poll_backend_status()
+            if active:
+                return btn_update, f"🛑 後端模型已強制關閉（已中斷 {len(active)} 個進行中的工作）"
+            return btn_update, f"{msg}"
+
         active = task_manager.get_active_tasks_overview()
         if active:
             btn_update = self.poll_backend_status()

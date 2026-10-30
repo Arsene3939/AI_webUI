@@ -36,7 +36,7 @@ def build_progress_html(task_or_msg: Any) -> str:
 
     return f"""
     <div style="width: 100%; margin-bottom: 8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
-        <div style="display: flex; justify-content: space-between; align-items: center; min-height: 44px; margin-bottom: 6px; font-size: 0.9rem; font-weight: 500; color: #334155; box-sizing: border-box;">
+        <div style="display: flex; justify-content: space-between; align-items: center; min-height: 44px; margin-bottom: 6px; font-size: 0.9rem; font-weight: 500; color: #f1f5f9; box-sizing: border-box;">
             <div style="flex: 1; min-width: 0; min-height: 2.7em; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; padding-right: 8px;">{msg}</div>
             <div style="flex-shrink: 0; font-weight: 700; color: #b45309; font-size: 0.95rem; line-height: 1.35;">{pct}%</div>
         </div>

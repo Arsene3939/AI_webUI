@@ -18,6 +18,7 @@ import time
 import json
 import uuid
 import socket
+import shutil
 import argparse
 import tempfile
 import threading
@@ -183,6 +184,7 @@ class E2ETestRunner:
         self.client = None
         self.temp_dir = tempfile.mkdtemp(prefix="minimax_e2e_")
         self.results = []
+        self.tracked_task_ids = []
 
     def log_step(self, step_name: str, passed: bool, message: str = "", duration: float = 0.0):
         status = "[PASS]" if passed else "[FAIL]"
@@ -298,6 +300,7 @@ class E2ETestRunner:
                 "scheduler": "unknown_scheduler",
             }
             legacy_task = task_manager.create_task("I2V", legacy_params["prompt"], legacy_params, device_id=legacy_device_id)
+            self.tracked_task_ids.append(legacy_task.task_id)
 
             # Simulate user browser opening webpage (calls demo.load -> restore_device_state)
             restored = self.client.predict(legacy_device_id, legacy_task.task_id, api_name="/restore_device_state")
@@ -384,6 +387,7 @@ class E2ETestRunner:
             final_html, final_video, final_task_id, final_dev_id = last_yield
             assert "100%" in final_html or "完成" in final_html, f"Final progress HTML unexpected: {final_html}"
             assert final_task_id, "Missing task_id in final generation yield"
+            self.tracked_task_ids.append(final_task_id)
             assert final_dev_id == user_device_id, f"Device ID mismatch in output: {final_dev_id}"
 
             # Verify adaptive resolution was computed to exact 1248 x 832 (Spec 6)
@@ -498,7 +502,9 @@ class E2ETestRunner:
         return all_passed
 
     def _cleanup(self):
-        """Terminates active servers."""
+        """Terminates active servers and removes every E2E artifact this run produced:
+        task records, generated fake videos, archived input files, and the temp dir
+        (Spec 2026-10-31 task 4: e2e runs must leave zero residue in outputs/)."""
         try:
             import app
             app.demo.close()
@@ -511,6 +517,36 @@ class E2ETestRunner:
                 self.mock_server.server_close()
             except Exception:
                 pass
+
+        # 1. Delete all tasks created by this run (delete_task also removes the
+        #    output video and the uploaded-input media archived in outputs/inputs).
+        try:
+            from task_manager import task_manager
+            for tid in self.tracked_task_ids:
+                try:
+                    task_manager.delete_task(tid, is_admin=True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 2. Sweep any e2e-marked media files left in the shared outputs folders
+        #    (belt-and-braces: covers videos from steps that aborted before delete).
+        try:
+            from config import OUTPUT_DIR
+            for scan_dir in (OUTPUT_DIR, os.path.join(OUTPUT_DIR, "frames")):
+                if os.path.isdir(scan_dir):
+                    for fname in os.listdir(scan_dir):
+                        if "_e2e_" in fname and os.path.splitext(fname)[1].lower() in (".mp4", ".webm", ".mkv", ".png"):
+                            try:
+                                os.remove(os.path.join(scan_dir, fname))
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+
+        # 3. Remove the run's input-file temp directory under %TEMP%.
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

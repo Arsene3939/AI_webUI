@@ -69,6 +69,19 @@ class ComfyUIAdminTab(BaseAdminTab):
             outputs=[self.queue_html],
         )
 
+        # Auto-refresh the ComfyUI queue panel on the shared 5s admin heartbeat
+        # (one localhost /queue GET per tick: negligible next to the existing 0.5s probe).
+        if getattr(self, "auto_refresh_timer", None) is not None:
+            def auto_queue_refresh(req: gr.Request = None):
+                if not AdminManager.is_super_user(req):
+                    return gr.update()
+                return AdminManager.build_admin_queue_html()
+
+            self.auto_refresh_timer.tick(
+                auto_queue_refresh,
+                outputs=[self.queue_html],
+            )
+
         self.register_comfy_events(session_ctx)
 
     def register_comfy_events(self, session_ctx: Any) -> None:

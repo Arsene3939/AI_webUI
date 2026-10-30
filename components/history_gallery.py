@@ -15,19 +15,31 @@ def get_history_dropdown_choices(
 ) -> List[Tuple[str, str]]:
     """Returns dropdown choices for completed tasks belonging to the specified device.
     Filters by owning module ('minimax'/'upscaler') when given, so each module's gallery
-    never shows other modules' records; single task_type filter kept for compatibility."""
+    never shows other modules' records; single task_type filter kept for compatibility.
+    Failed/interrupted records (newest 15) are also listed with ❌/⚠️ markers so a job that
+    died (backend offline, manual stop, backend restart) never silently disappears from view."""
     if not device_id:
         return [("— 暫無歷史紀錄 —", "")]
     completed = task_manager.get_completed_tasks_for_device(device_id, module=module)
     if task_type:
         completed = [t for t in completed if t.task_type == task_type]
-    if not completed:
+    unfinished = task_manager.get_unfinished_tasks_for_device(device_id, module=module)
+    if task_type:
+        unfinished = [t for t in unfinished if t.task_type == task_type]
+    unfinished = unfinished[:15]
+    if not completed and not unfinished:
         return [("— 暫無歷史紀錄 —", "")]
     choices = []
     for t in completed:
         t_str = time.strftime("%m/%d %H:%M", time.localtime(t.created_at))
         short_prompt = (t.prompt[:30] + "...") if len(t.prompt) > 30 else t.prompt
         label = f"[{t.task_type}] {t_str} | {short_prompt}"
+        choices.append((label, t.task_id))
+    for t in unfinished:
+        t_str = time.strftime("%m/%d %H:%M", time.localtime(t.created_at))
+        short_prompt = (t.prompt[:30] + "...") if len(t.prompt) > 30 else t.prompt
+        icon = "⚠️" if t.status == "interrupted" else "❌"
+        label = f"{icon} [{t.task_type}] {t_str} | {short_prompt}"
         choices.append((label, t.task_id))
     return choices
 
@@ -37,10 +49,30 @@ def on_select_history_item(selected_task_id: str, device_id: Optional[str]) -> T
     if not selected_task_id:
         return None, "請選擇上方任務"
     task = task_manager.get_task(selected_task_id, device_id=device_id)
-    if not task or not task.video_path or not os.path.exists(task.video_path):
+    if not task:
         return None, "⚠️ 找不到該影片檔案"
 
     t_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(task.created_at))
+
+    # Failed/interrupted job: no video to show, but surface the record and its stop reason
+    # instead of pretending the entry doesn't exist (Spec 2026-10-31 task 2).
+    if task.status in ("failed", "interrupted"):
+        status_label = "已中斷" if task.status == "interrupted" else "失敗"
+        info_md = f"""
+        ### 📜 任務詳細資料（{status_label}）
+        * **任務類型**：`{task.task_type}`
+        * **建立時間**：{t_str}
+        * **狀態**：{status_label}（進行到 {task.step}/{task.total_steps} 步）
+        * **說明**：{task.message}
+        * **提示詞**：
+        ```text
+        {task.prompt}
+        ```
+        """
+        return None, info_md
+
+    if not task.video_path or not os.path.exists(task.video_path):
+        return None, "⚠️ 找不到該影片檔案"
     info_md = f"""
     ### 📜 任務詳細資料
     * **任務類型**：`{task.task_type}`

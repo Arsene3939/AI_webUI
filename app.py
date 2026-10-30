@@ -61,6 +61,25 @@ from views.admin.view import AdminPanelView
 logger = get_logger("App")
 lan_ip = get_lan_ip()
 
+# Dark app theme: the entire UI chrome (header/sidebar/status boxes) is dark by design,
+# so the gradio theme is pinned dark (light AND dark variants of each token) to stop
+# a light-OS system from rendering black text on our dark backgrounds.
+APP_THEME = gr.themes.Default(primary_hue="blue").set(
+    body_background_fill="#0b1220", body_background_fill_dark="#0b1220",
+    body_text_color="#e2e8f0", body_text_color_dark="#e2e8f0",
+    body_text_color_subdued="#94a3b8", body_text_color_subdued_dark="#94a3b8",
+    block_background_fill="#111c2e", block_background_fill_dark="#111c2e",
+    block_border_color="#243550", block_border_color_dark="#243550",
+    block_title_text_color="#e2e8f0", block_title_text_color_dark="#e2e8f0",
+    block_label_text_color="#9fb3c8", block_label_text_color_dark="#9fb3c8",
+    block_info_text_color="#94a3b8", block_info_text_color_dark="#94a3b8",
+    input_background_fill="#16233b", input_background_fill_dark="#16233b",
+    input_border_color="#334155", input_border_color_dark="#334155",
+    input_placeholder_color="#64748b", input_placeholder_color_dark="#64748b",
+    link_text_color="#38bdf8", link_text_color_dark="#38bdf8",
+    code_background_fill="#16233b", code_background_fill_dark="#16233b",
+)
+
 # --- Shared Tracking State for Device Notifications ---
 _device_last_reported_completed: dict = {}
 _device_last_status_html: dict = {}
@@ -99,7 +118,9 @@ on_remove_admin_ip = AdminManager.on_remove_admin_ip
 
 
 # --- Build UI Layout ---
-with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
+# fill_width=True disables Gradio 6's mobile-first 640px container cap on desktop;
+# the actual max width is governed by the responsive rules in components/styles.py.
+with gr.Blocks(title="MiniMax-H3 AI Video WebUI", fill_width=True) as demo:
     # 1. Strictly isolated persistent states per browser/device LocalStorage
     session_ctx = SessionContext().render()
     device_id_state = session_ctx.device_id_state
@@ -433,9 +454,18 @@ def launch_webui(port: int = WEBUI_PORT, raise_on_error: bool = False, **launch_
     import sys
     import threading
 
+    if getattr(demo, "_is_running_in_reload_thread", False):
+        # gradio watch 模式（run.bat 的 `python -m gradio app.py`）熱重載：reloader 會重跑
+        # app.py 並把重建的 demo 換進執行中的伺服器，但不會重綁 port。theme/css/head 是
+        # 在 launch() 最前面幾行才被套用到 Blocks 上的，因此重載執行緒中仍必須呼叫
+        # launch()——它套用完樣式會在綁 port 前自動 return，不會重複啟動伺服器。
+        # 少了這一步，改完 components/styles.py 熱重載後自訂樣式會全部遺失，
+        # 只能整台重啟才看得到改动。
+        demo.launch(theme=APP_THEME, css=CUSTOM_CSS, head=CUSTOM_HEAD_JS)
+        return demo
+
     if (
-        getattr(demo, "_is_running_in_reload_thread", False)
-        or getattr(demo, "is_running", False)
+        getattr(demo, "is_running", False)
         or (os.environ.get("GRADIO_WATCH_DIRS") and threading.current_thread() is not threading.main_thread())
     ):
         return demo
@@ -445,6 +475,13 @@ def launch_webui(port: int = WEBUI_PORT, raise_on_error: bool = False, **launch_
         if raise_on_error:
             raise OSError(f"Port {port} is already in use by another process.")
         sys.exit(1)
+
+    # Startup reconciliation: queued/running tasks reloaded from history have no live worker
+    # behind them; verify each against ComfyUI once and demote the genuinely-lost ones.
+    try:
+        task_manager.reconcile_orphaned_tasks()
+    except Exception as e:
+        logger.warning("Orphaned-task reconciliation failed: %s", e)
 
     print("=" * 60)
     print(f"AI WebUI Multi-Module Platform Starting (Port: {port})...")
@@ -467,7 +504,7 @@ def launch_webui(port: int = WEBUI_PORT, raise_on_error: bool = False, **launch_
         "server_name": WEBUI_HOST,
         "server_port": port,
         "share": False,
-        "theme": gr.themes.Default(primary_hue="blue"),
+        "theme": APP_THEME,
         "css": CUSTOM_CSS,
         "head": CUSTOM_HEAD_JS,
         "allowed_paths": list(set(allowed)),
