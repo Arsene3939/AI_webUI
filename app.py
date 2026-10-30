@@ -68,7 +68,7 @@ _device_last_status_html: dict = {}
 
 def handle_stop_generate(device_id: str):
     """Halts active generation tasks for the requesting device."""
-    interrupted = task_manager.interrupt_device_tasks(device_id=device_id)
+    interrupted = task_manager.interrupt_device_tasks(device_id=device_id, module="minimax")
     logger.info("[App] User stopped generation for device '%s'. Interrupted: %s", device_id, interrupted)
     return (
         build_progress_html("⚠️ 任務已被手動中斷"),
@@ -206,11 +206,14 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
         if not stored_device_id:
             stored_device_id = f"dev_{uuid.uuid4().hex[:6]}"
 
-        task = task_manager.get_task(stored_task_id, device_id=stored_device_id) or task_manager.get_latest_task_for_device(stored_device_id)
+        task = (
+            task_manager.get_task(stored_task_id, device_id=stored_device_id, module="minimax")
+            or task_manager.get_latest_task_for_device(stored_device_id, module="minimax")
+        )
         logger.info("[Session] Device connected/restoring: %s (Active task: %s)", stored_device_id, task.task_id if task else "None")
 
         content_updates, btn_updates = minimax_view.restore_state(task, stored_device_id)
-        history_choices = get_history_dropdown_choices(stored_device_id)
+        history_choices = get_history_dropdown_choices(stored_device_id, module="minimax")
         header = build_header_html(device_id=stored_device_id)
         active_task_id = task.task_id if task else stored_task_id
 
@@ -250,9 +253,12 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                 *default_btns,
             )
 
-        task = task_manager.get_active_task_for_device(stored_device_id) or task_manager.get_task(stored_task_id, device_id=stored_device_id)
+        task = (
+            task_manager.get_active_task_for_device(stored_device_id, module="minimax")
+            or task_manager.get_task(stored_task_id, device_id=stored_device_id, module="minimax")
+        )
         if not task:
-            task = task_manager.get_latest_task_for_device(stored_device_id)
+            task = task_manager.get_latest_task_for_device(stored_device_id, module="minimax")
 
         if not task:
             return (
@@ -276,7 +282,7 @@ with gr.Blocks(title="MiniMax-H3 AI Video WebUI") as demo:
                 )
 
             _device_last_reported_completed[stored_device_id] = task.task_id
-            history_choices = get_history_dropdown_choices(stored_device_id)
+            history_choices = get_history_dropdown_choices(stored_device_id, module="minimax")
             progress_html = build_progress_html(task)
             video_val = task.video_path if (task.status == "completed" and task.video_path and os.path.exists(task.video_path)) else gr.update()
 

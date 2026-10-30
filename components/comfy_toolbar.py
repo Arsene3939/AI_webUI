@@ -14,6 +14,7 @@ from comfy_client import (
     start_comfyui_backend,
     stop_comfyui_backend,
 )
+from task_manager import task_manager
 from logger import get_logger
 
 logger = get_logger("ComfyToolbar")
@@ -76,7 +77,20 @@ class ComfyToolbarComponent:
         yield btn_update, f"{msg}"
 
     def on_stop_backend(self) -> Tuple[dict, str]:
-        """Handler for stopping ComfyUI backend process."""
+        """Handler for stopping ComfyUI backend process.
+
+        SAFEGUARD: while any generation job is still queued/running (any device,
+        any module), the shutdown is refused — killing the backend mid-job would
+        orphan the worker and lose that user's output.
+        """
+        active = task_manager.get_active_tasks_overview()
+        if active:
+            btn_update = self.poll_backend_status()
+            return btn_update, (
+                f"⚠️ 無法關閉後端模型：目前仍有 {len(active)} 個工作正在排队或生成中，"
+                "請等待完成，或先到對應頁面按下停止按鈕"
+            )
+
         ok, msg = stop_comfyui_backend(COMFY_SERVER_URL)
         btn_update = self.poll_backend_status()
         return btn_update, f"{msg}"

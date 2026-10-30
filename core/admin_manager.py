@@ -379,6 +379,14 @@ class AdminManager:
     def on_restart_backend(cls, request: gr.Request = None):
         if not cls.is_super_user(request):
             return "⚠️ 權限不足，僅限本機管理員操作"
+        # SAFEGUARD: never kill the backend while generation jobs are queued/running —
+        # it orphans the active worker and silently discards everyone's queued work.
+        active_count = task_manager.get_active_task_count()
+        if active_count:
+            return (
+                f"⚠️ 無法重啟後端：仍有 {active_count} 個工作在排队或運算中，"
+                "請先以「🛑 中斷當前運算任務」與「🗑️ 清空所有等待中排隊佇列」清空後再重啟"
+            )
         stop_comfyui_backend()
         time.sleep(1)
         ok, msg = start_comfyui_backend()

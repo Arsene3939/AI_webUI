@@ -39,7 +39,7 @@ class MiniMaxView(ComfyUIBaseView):
         self.i2v_tab = I2VTab()
         self.t2v_tab = T2VTab()
         self.r2v_tab = R2VTab()
-        self.history_gallery = HistoryGalleryComponent()
+        self.history_gallery = HistoryGalleryComponent(module="minimax")
         self.admin_tab = MiniMaxAdminTab()
         self.tabs: Optional[gr.Tabs] = None
         self._device_last_reported_completed: Dict[str, str] = {}
@@ -65,6 +65,15 @@ class MiniMaxView(ComfyUIBaseView):
         self.r2v_tab.register_events(session_ctx.session_task_state, session_ctx.device_id_state, on_completed)
         self.history_gallery.register_events(session_ctx.device_id_state)
         self.admin_tab.register_events(session_ctx)
+
+        # Last-frame extraction/download for each player card (Spec task 3),
+        # plus clearing a stale frame offer whenever a new generation starts.
+        for tab in (self.i2v_tab, self.t2v_tab, self.r2v_tab):
+            tab.player_card.register_frame_events()
+            tab.action_btns.generate_btn.click(
+                lambda tab=tab: tab.player_card.reset_frame_updates(),
+                outputs=[tab.player_card.frame_download, tab.player_card.frame_msg],
+            )
 
     def get_restore_components(self) -> List[Any]:
         """
@@ -155,7 +164,7 @@ class MiniMaxView(ComfyUIBaseView):
         elif task and task.status in ("running", "queued"):
             self._device_last_reported_completed.pop(device_id, None)
 
-        active_task = task_manager.get_active_task_for_device(device_id)
+        active_task = task_manager.get_active_task_for_device(device_id, module="minimax")
         is_active = active_task is not None
         active_type = active_task.task_type if active_task else None
 

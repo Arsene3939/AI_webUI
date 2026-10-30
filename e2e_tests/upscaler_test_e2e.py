@@ -44,6 +44,8 @@ if PROJECT_ROOT not in sys.path:
 class MockComfyUIUpscalerHandler(BaseHTTPRequestHandler):
     submitted_prompts = set()
     poll_counts = {}
+    # Timeline log: (prompt_id, is_upscale_graph, submission_wall_time)
+    prompt_log = []
 
     def log_message(self, format, *args):
         # Suppress noisy HTTP logging in test output
@@ -138,17 +140,19 @@ class MockComfyUIUpscalerHandler(BaseHTTPRequestHandler):
             body = self.rfile.read(content_length)
             data = json.loads(body.decode("utf-8"))
             prompt_graph = data.get("prompt", {})
+            is_minimax_graph = "unet_loader" in prompt_graph
 
-            # Verify prompt graph contains the 6 required nodes from utility-gan_upscaler.json
-            assert "1" in prompt_graph, "Missing UpscaleModelLoader (node 1) in upscale graph"
-            assert "9" in prompt_graph, "Missing LoadVideo (node 9) in upscale graph"
-            assert "10" in prompt_graph, "Missing GetVideoComponents (node 10) in upscale graph"
-            assert "2" in prompt_graph, "Missing ImageUpscaleWithModel (node 2) in upscale graph"
-            assert "11" in prompt_graph, "Missing CreateVideo (node 11) in upscale graph"
-            assert "12" in prompt_graph, "Missing SaveVideo (node 12) in upscale graph"
+            if not is_minimax_graph:
+                # Verify prompt graph contains the 6 required nodes from utility-gan_upscaler.json
+                assert "1" in prompt_graph, "Missing UpscaleModelLoader (node 1) in upscale graph"
+                assert "9" in prompt_graph, "Missing LoadVideo (node 9) in upscale graph"
+                assert "10" in prompt_graph, "Missing GetVideoComponents (node 10) in upscale graph"
+                assert "2" in prompt_graph, "Missing ImageUpscaleWithModel (node 2) in upscale graph"
+                assert "11" in prompt_graph, "Missing CreateVideo (node 11) in upscale graph"
+                assert "12" in prompt_graph, "Missing SaveVideo (node 12) in upscale graph"
 
             # Strict ComfyUI node schema validation (simulating execution.validate_prompt)
-            node_11_inputs = prompt_graph["11"].get("inputs", {})
+            node_11_inputs = prompt_graph.get("11", {}).get("inputs", {})
             if "bit_depth" in node_11_inputs:
                 bd_val = node_11_inputs["bit_depth"]
                 if isinstance(bd_val, str):
@@ -169,6 +173,7 @@ class MockComfyUIUpscalerHandler(BaseHTTPRequestHandler):
             prompt_id = str(uuid.uuid4())
             self.submitted_prompts.add(prompt_id)
             self.poll_counts[prompt_id] = 0
+            self.prompt_log.append((prompt_id, not is_minimax_graph, time.time()))
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -409,6 +414,122 @@ class UpscalerE2ETestRunner:
             )
         except Exception as e:
             self.log_step("Step 6: User Video Download & Integrity Check", False, str(e), time.time() - t0)
+            self._cleanup()
+            return False
+
+        # -------------------------------------------------------------
+        # STEP 6.5: Cross-Module Concurrency — minimax + upscale queue politely
+        # (Spec Task 1: serial queueing, no cross-module preemption;
+        #  Spec Task 2: per-module history isolation on a shared device)
+        # -------------------------------------------------------------
+        t0 = time.time()
+        cross_dev = f"dev_cross_{uuid.uuid4().hex[:6]}"
+        try:
+            from components.history_gallery import get_history_dropdown_choices
+
+            # Dummy first-frame PNG for the MiniMax I2V job (real 1x1 RGBA PNG via PIL)
+            from PIL import Image
+            png_path = os.path.join(self.temp_dir, f"cross_frame_{uuid.uuid4().hex[:6]}.png")
+            Image.new("RGBA", (1, 1), (128, 128, 128, 255)).save(png_path)
+
+            print("[*] Cross-module: submitting MiniMax I2V job...")
+            mm_job = self.client.submit(
+                gradio_client.handle_file(png_path),   # first_frame
+                None,                                  # last_frame
+                "Cross-module queueing e2e shot",      # prompt
+                "16:9 (橫向風景)",                     # aspect_ratio
+                "5 (1.0 MP - 標準推薦)",               # quality_level
+                2.0,                                   # duration
+                1,                                     # seed
+                20,                                    # steps
+                1.0,                                   # denoise
+                "res_multistep",                       # sampler
+                "simple",                              # scheduler
+                24,                                    # fps
+                None,                                  # session_task_state
+                cross_dev,                             # device_id_state
+                api_name="/handle_i2v_generate",
+            )
+
+            mm_final_yield = {}
+            mm_stream_done = threading.Event()
+
+            def consume_minimax_stream():
+                try:
+                    for item in mm_job:
+                        mm_final_yield["last"] = item
+                except Exception as exc:
+                    mm_final_yield["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+                finally:
+                    mm_stream_done.set()
+
+            threading.Thread(target=consume_minimax_stream, daemon=True).start()
+
+            # Submit an upscale task while minimax still occupies the serial backend.
+            time.sleep(0.5)
+            print("[*] Cross-module: submitting Video Upscaler job while minimax is active...")
+            cross_video = self.create_valid_test_video()
+            up_job = self.client.submit(
+                gradio_client.handle_file(cross_video),
+                chosen_model,
+                None,
+                cross_dev,
+                api_name="/handle_upscale_generate",
+            )
+
+            up_yields = []
+            for item in up_job:
+                up_yields.append(item)
+                if time.time() - t0 > 60:
+                    raise TimeoutError("Cross-module upscale exceeded 60s timeout!")
+
+            assert mm_stream_done.wait(timeout=60), "MiniMax progress stream did not finish!"
+
+            mm_final = mm_final_yield.get("last")
+            up_final = up_yields[-1] if up_yields else None
+            assert mm_final is not None and up_final is not None, (
+                "Missing final yields in cross-module streams "
+                f"(minimax stream error: {mm_final_yield.get('error', 'none')})"
+            )
+
+            mm_html, mm_video, mm_task_id, _ = mm_final
+            up_html, up_video, up_task_id, _ = up_final
+
+            # Both tasks must have run to completion: neither was preempted by the other.
+            assert ("完成" in mm_html or "100%" in mm_html), f"MiniMax job was preempted! Final stream: {str(mm_html)[:120]}"
+            assert ("完成" in up_html or "100%" in up_html), f"Upscale job failed! Final stream: {str(up_html)[:120]}"
+
+            t_mm = task_manager.get_task(mm_task_id, device_id=cross_dev)
+            t_up = task_manager.get_task(up_task_id, device_id=cross_dev)
+            assert t_mm and t_up, "Cross-module task objects missing from task_manager"
+            assert t_mm.status == "completed" and t_mm.module == "minimax"
+            assert t_up.status == "completed" and t_up.module == "upscaler"
+
+            # Serial dispatcher evidence: the upscale prompt only reached ComfyUI
+            # after the minimax task had already completed (no backend overlap).
+            log_by_pid = {pid: (is_up, ts) for pid, is_up, ts in MockComfyUIUpscalerHandler.prompt_log}
+            assert t_mm.prompt_id in log_by_pid and t_up.prompt_id in log_by_pid, "Missing prompt submissions in mock timeline log"
+            up_submit_ts = log_by_pid[t_up.prompt_id][1]
+            assert up_submit_ts >= t_mm.completed_at - 0.6, (
+                f"Serial dispatcher violated: upscale prompt submitted at {up_submit_ts:.2f} "
+                f"but minimax task only completed at {t_mm.completed_at:.2f}"
+            )
+
+            # Per-module history isolation on the SAME shared device (Spec Task 2)
+            mm_hist = [tid for _, tid in get_history_dropdown_choices(cross_dev, module="minimax") if tid]
+            up_hist = [tid for _, tid in get_history_dropdown_choices(cross_dev, module="upscaler") if tid]
+            assert mm_hist == [mm_task_id], f"minimax history gallery polluted on shared device: {mm_hist}"
+            assert up_hist == [up_task_id], f"upscaler history gallery polluted on shared device: {up_hist}"
+
+            self.log_step(
+                "Step 6.5: Cross-Module Concurrency (Serial Queuing & History Isolation)",
+                True,
+                f"minimax {mm_task_id[:16]} and upscale {up_task_id[:16]} completed serially on device '{cross_dev}' "
+                f"(upscale prompt submitted {up_submit_ts - t_mm.completed_at:+.2f}s relative to minimax completion)",
+                time.time() - t0,
+            )
+        except Exception as e:
+            self.log_step("Step 6.5: Cross-Module Concurrency (Serial Queuing & History Isolation)", False, str(e), time.time() - t0)
             self._cleanup()
             return False
 

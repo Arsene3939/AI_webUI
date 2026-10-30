@@ -219,6 +219,29 @@ div[class*="sidebar"].open {
     z-index: 1005 !important;
 }
 
+/* Sidebar 收合拉頁籤（gradio 原生 chevron 預設深色背景下幾乎看不見，這裡改成高對比可辨識樣式）
+   展開時位於儀表板右上角、收起時位於螢幕左緣，點一下就收合/展開 */
+.sidebar .toggle-button {
+    top: 12px !important;
+    width: 30px !important;
+    height: 40px !important;
+    background: #1e293b !important;
+    border: 1px solid #38bdf8 !important;
+    z-index: 1006 !important;
+}
+
+.sidebar .chevron-left {
+    width: 10px !important;
+    height: 10px !important;
+    border-top: 2px solid #7dd3fc !important;
+    border-right: 2px solid #7dd3fc !important;
+}
+
+.sidebar .toggle-button:hover {
+    background: #334155 !important;
+    border-color: #7dd3fc !important;
+}
+
 /* Mobile Sidebar Width Override (防止手機端展開佔滿全螢幕 100vw) */
 @media (max-width: 768px) {
     .sidebar,

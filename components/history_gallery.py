@@ -8,11 +8,17 @@ import gradio as gr
 from task_manager import task_manager
 
 
-def get_history_dropdown_choices(device_id: Optional[str], task_type: Optional[str] = None) -> List[Tuple[str, str]]:
-    """Returns dropdown choices for completed tasks belonging to the specified device."""
+def get_history_dropdown_choices(
+    device_id: Optional[str],
+    task_type: Optional[str] = None,
+    module: Optional[str] = None,
+) -> List[Tuple[str, str]]:
+    """Returns dropdown choices for completed tasks belonging to the specified device.
+    Filters by owning module ('minimax'/'upscaler') when given, so each module's gallery
+    never shows other modules' records; single task_type filter kept for compatibility."""
     if not device_id:
         return [("— 暫無歷史紀錄 —", "")]
-    completed = task_manager.get_completed_tasks_for_device(device_id)
+    completed = task_manager.get_completed_tasks_for_device(device_id, module=module)
     if task_type:
         completed = [t for t in completed if t.task_type == task_type]
     if not completed:
@@ -49,14 +55,19 @@ def on_select_history_item(selected_task_id: str, device_id: Optional[str]) -> T
     return task.video_path, info_md
 
 
-def on_delete_history_item(selected_task_id: str, device_id: Optional[str], task_type: Optional[str] = None):
+def on_delete_history_item(
+    selected_task_id: str,
+    device_id: Optional[str],
+    task_type: Optional[str] = None,
+    module: Optional[str] = None,
+):
     """Deletes the selected historical task, cleans up storage, and refreshes the gallery."""
     if not selected_task_id:
-        choices = get_history_dropdown_choices(device_id, task_type=task_type)
+        choices = get_history_dropdown_choices(device_id, task_type=task_type, module=module)
         return gr.update(choices=choices), None, "選擇上方任務查看詳細資訊與播放。"
 
     task_manager.delete_task(selected_task_id, device_id=device_id)
-    choices = get_history_dropdown_choices(device_id, task_type=task_type)
+    choices = get_history_dropdown_choices(device_id, task_type=task_type, module=module)
     new_value = choices[0][1] if choices and choices[0][1] else ""
 
     if new_value:
@@ -67,10 +78,13 @@ def on_delete_history_item(selected_task_id: str, device_id: Optional[str], task
 
 
 class HistoryGalleryComponent:
-    """Encapsulates history gallery tab and events."""
+    """Encapsulates history gallery tab and events.
+    `module` ("minimax"/"upscaler") scopes the gallery to one module's tasks;
+    `task_type` remains for single-type filtering/backward compatibility."""
 
-    def __init__(self, task_type: Optional[str] = None):
+    def __init__(self, task_type: Optional[str] = None, module: Optional[str] = None):
         self.task_type = task_type
+        self.module = module
         self.refresh_btn: Optional[gr.Button] = None
         self.dropdown: Optional[gr.Dropdown] = None
         self.delete_btn: Optional[gr.Button] = None
@@ -81,7 +95,7 @@ class HistoryGalleryComponent:
         with gr.Row():
             self.refresh_btn = gr.Button("🔄 刷新歷史紀錄", variant="secondary", scale=1)
             self.dropdown = gr.Dropdown(
-                choices=get_history_dropdown_choices(None, task_type=self.task_type),
+                choices=get_history_dropdown_choices(None, task_type=self.task_type, module=self.module),
                 value="",
                 label="選取歷史任務",
                 scale=6,
@@ -100,7 +114,7 @@ class HistoryGalleryComponent:
     def register_events(self, device_id_state: gr.BrowserState):
         """Binds history dropdown selection, refresh, and delete handlers."""
         def handle_refresh(device_id):
-            choices = get_history_dropdown_choices(device_id, task_type=self.task_type)
+            choices = get_history_dropdown_choices(device_id, task_type=self.task_type, module=self.module)
             val = choices[0][1] if choices and choices[0][1] else ""
             if val:
                 vid, info = on_select_history_item(val, device_id)
@@ -120,7 +134,7 @@ class HistoryGalleryComponent:
         )
 
         def handle_delete(selected_task_id, device_id):
-            return on_delete_history_item(selected_task_id, device_id, task_type=self.task_type)
+            return on_delete_history_item(selected_task_id, device_id, task_type=self.task_type, module=self.module)
 
         self.delete_btn.click(
             handle_delete,

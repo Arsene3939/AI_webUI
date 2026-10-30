@@ -1,8 +1,9 @@
 """
 Video player output card and progress bar component.
 """
-from typing import Optional, Any
+from typing import Optional, Any, Tuple
 import gradio as gr
+from frame_extractor import extract_last_frame
 
 
 def build_progress_html(task_or_msg: Any) -> str:
@@ -50,20 +51,62 @@ def build_progress_html(task_or_msg: Any) -> str:
 
 
 class VideoPlayerCardComponent:
-    """Encapsulates status progress bar, recover button, and video output player."""
+    """Encapsulates status progress bar, recover button, video output player,
+    and the last-frame extraction/download controls (Spec task 3)."""
 
     def __init__(self, label: str = "生成影片"):
         self.label = label
         self.status: Optional[gr.HTML] = None
         self.recover_btn: Optional[gr.Button] = None
         self.output_video: Optional[gr.Video] = None
+        self.frame_btn: Optional[gr.Button] = None
+        self.frame_download: Optional[gr.DownloadButton] = None
+        self.frame_msg: Optional[gr.Markdown] = None
 
     def render(self) -> "VideoPlayerCardComponent":
         with gr.Column(scale=1):
             self.status = gr.HTML(build_progress_html("🟢 準備就緒"))
             self.recover_btn = gr.Button("🔄 恢復上次輸入與成果", variant="secondary", elem_classes=["recover-btn"])
             self.output_video = gr.Video(label=self.label, autoplay=True, interactive=False)
+            with gr.Row():
+                self.frame_btn = gr.Button(
+                    "🖼️ 提取最後一幀",
+                    variant="secondary",
+                    elem_classes=["recover-btn"],
+                    scale=1,
+                )
+                self.frame_download = gr.DownloadButton(
+                    "💾 下載最後一幀",
+                    variant="primary",
+                    visible=False,
+                    scale=1,
+                )
+            self.frame_msg = gr.Markdown("", elem_classes=["backend-status-box"])
         return self
+
+    def register_frame_events(self) -> "VideoPlayerCardComponent":
+        """Wires the last-frame extraction handler for this card (shared across MiniMax tabs)."""
+        def on_extract_last_frame(video_path: Optional[str]) -> Tuple[Any, str]:
+            if not video_path:
+                return gr.update(visible=False, value=None), "⚠️ 目前沒有可提取的影片，請先生成影片或按上方按鈕恢復上次成果"
+            frame_path = extract_last_frame(video_path)
+            if not frame_path:
+                return gr.update(visible=False, value=None), "❌ 最後一幀提取失敗，請確認影片檔案完好後再試一次"
+            return (
+                gr.update(value=frame_path, visible=True),
+                "🖼️ 最後一幀已準備完成，請點擊右側「💾 下載最後一幀」儲存圖片",
+            )
+
+        self.frame_btn.click(
+            on_extract_last_frame,
+            inputs=[self.output_video],
+            outputs=[self.frame_download, self.frame_msg],
+        )
+        return self
+
+    def reset_frame_updates(self) -> Tuple[Any, Any]:
+        """Updates that clear a stale downloaded-frame offer when a new generation begins."""
+        return gr.update(visible=False, value=None), gr.update(value="")
 
 
 class ActionButtonsComponent:

@@ -14,6 +14,7 @@ if PROJECT_ROOT not in sys.path:
 
 import config
 import task_manager
+import frame_extractor
 
 
 @pytest.fixture(autouse=True)
@@ -33,6 +34,7 @@ def isolated_test_env(tmp_path, monkeypatch):
     monkeypatch.setattr(task_manager, "OUTPUT_DIR", str(temp_output))
     monkeypatch.setattr(task_manager, "INPUTS_ARCHIVE_DIR", str(temp_inputs))
     monkeypatch.setattr(task_manager, "HISTORY_FILE", str(temp_history))
+    monkeypatch.setattr(frame_extractor, "OUTPUT_DIR", str(temp_output))
 
     # Reset task manager in-memory tasks
     with task_manager.task_manager._lock:

@@ -4,8 +4,10 @@ Unit tests for Task and TaskManager with strict per-device isolation.
 import os
 import time
 import json
+import threading
 from unittest.mock import patch, MagicMock
 import pytest
+import task_manager as tm_module  # Module alias (the name `task_manager` below refers to the singleton)
 from task_manager import Task, TaskManager, task_manager
 
 
@@ -388,3 +390,213 @@ class TestTaskManagerBackgroundWorker:
         assert "前處理中" not in task.message
         assert "載入模型中" not in task.message
 
+
+class TestModuleFieldAndHistoryIsolation:
+    """Spec task 2: tasks carry an owning module and galleries never leak across modules."""
+
+    def test_module_assignment_and_derivation(self):
+        """Explicit module honored; legacy task_type correctly derives module."""
+        tm = TaskManager()
+        t_up = tm.create_task("UPSCALER", "Upscale clip", {}, device_id="dev_mod")
+        t_i2v = tm.create_task("I2V", "Generate clip", {}, device_id="dev_mod")
+        assert t_up.module == "upscaler"
+        assert t_i2v.module == "minimax"
+
+        # Legacy constructor without module
+        legacy = Task("task_legacy", "T2V", "old", {}, device_id="dev_mod")
+        assert legacy.module == "minimax"
+
+    def test_module_survives_history_roundtrip_and_legacy_load(self):
+        """to_dict/from_dict keeps module; history JSON without module field still loads."""
+        tm = TaskManager()
+        t = tm.create_task("UPSCALER", "Persisted upscale", {}, device_id="dev_mod2")
+        assert t.to_dict()["module"] == "upscaler"
+        tm._save_history()
+
+        # Simulate a legacy history file recorded before the module field existed
+        with open(tm_module.HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for item in data:
+            item.pop("module", None)
+        with open(tm_module.HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        tm2 = TaskManager()
+        loaded = tm2.get_task(t.task_id)
+        assert loaded is not None
+        assert loaded.module == "upscaler"  # derived from task_type
+
+    def test_history_choices_isolated_between_modules(self, tmp_path):
+        """minimax gallery must not show UPSCALER records, and vice versa (Spec task 2)."""
+        from components.history_gallery import get_history_dropdown_choices
+
+        dev = "dev_hist_iso"
+        video_a = tmp_path / "minimax_out.mp4"
+        video_a.write_bytes(b"mm")
+        video_b = tmp_path / "up_out.mp4"
+        video_b.write_bytes(b"up")
+
+        t_mm = task_manager.create_task("I2V", "MiniMax job", {}, device_id=dev)
+        t_mm.status = "completed"
+        t_mm.video_path = str(video_a)
+
+        t_up = task_manager.create_task("UPSCALER", "Upscale job", {}, device_id=dev)
+        t_up.status = "completed"
+        t_up.video_path = str(video_b)
+
+        mm_choices = [tid for _, tid in get_history_dropdown_choices(dev, module="minimax")]
+        up_choices = [tid for _, tid in get_history_dropdown_choices(dev, module="upscaler")]
+
+        assert mm_choices == [t_mm.task_id]
+        assert up_choices == [t_up.task_id]
+
+    def test_latest_and_active_queries_module_scoped(self):
+        """A device's latest upscaler task must not shadow the minimax view's session state."""
+        tm = TaskManager()
+        dev = "dev_latest_iso"
+        t_mm = tm.create_task("I2V", "minimax job", {}, device_id=dev)
+        t_mm.created_at = 1000.0
+        t_up = tm.create_task("UPSCALER", "upscale job", {}, device_id=dev)
+        t_up.created_at = 2000.0  # newer task belongs to the other module
+
+        latest_mm = tm.get_latest_task_for_device(dev, module="minimax")
+        latest_up = tm.get_latest_task_for_device(dev, module="upscaler")
+        assert latest_mm is not None and latest_mm.task_id == t_mm.task_id
+        assert latest_up is not None and latest_up.task_id == t_up.task_id
+
+        # Unfiltered behavior preserved for admin/global views
+        latest_any = tm.get_latest_task_for_device(dev)
+        assert latest_any is not None and latest_any.task_id == t_up.task_id
+
+        active_up = tm.get_active_task_for_device(dev, module="upscaler")
+        assert active_up is not None and active_up.task_id == t_up.task_id
+        assert active_up.module == "upscaler"
+
+
+class TestModuleScopedInterrupt:
+    """Spec task 1: stop buttons only interrupt their own module's tasks."""
+
+    def test_interrupt_device_tasks_only_targets_one_module(self):
+        tm = TaskManager()
+        dev = "dev_iso_int"
+        t_mm = tm.create_task("I2V", "minimax running job", {}, device_id=dev)
+        t_up = tm.create_task("UPSCALER", "upscaler running job", {}, device_id=dev)
+
+        interrupted = tm.interrupt_device_tasks(device_id=dev, module="upscaler")
+        assert interrupted == [t_up.task_id]
+        assert t_up.status == "interrupted"
+        assert t_mm.status == "queued"  # minimax job untouched (friendly-fire eliminated)
+
+        # Legacy unscoped call still interrupts the remaining task (admin/global path)
+        interrupted_all = tm.interrupt_device_tasks(device_id=dev)
+        assert t_mm.task_id in interrupted_all
+        assert t_mm.status == "interrupted"
+
+    @patch("comfy_client.interrupt_execution")
+    def test_interrupt_task_uses_targeted_cancel_only(self, mock_interrupt):
+        """No general /interrupt: other modules' running ComfyUI jobs must not be killed."""
+        tm = TaskManager()
+        t = tm.create_task("I2V", "job with prompt", {}, device_id="dev_targeted")
+        t.status = "running"
+        t.prompt_id = "prompt-target-001"
+
+        assert tm.interrupt_task(t.task_id) is True
+        assert t.status == "interrupted"
+        # Every interrupt call must carry the target prompt_id; none may be general
+        assert mock_interrupt.call_count >= 1
+        for call in mock_interrupt.call_args_list:
+            assert call.kwargs.get("prompt_id") == "prompt-target-001"
+
+
+class TestSerialDispatcher:
+    """Spec task 1: FIFO serial dispatch so modules queue instead of preempting."""
+
+    def test_dispatcher_runs_tasks_fifo_one_at_a_time(self, monkeypatch):
+        tm = TaskManager()
+        execution_log = []
+        active = {"count": 0}
+
+        def fake_worker(self, task, prompt_graph, server_url):
+            assert active["count"] == 0, "Dispatcher violated serial execution (overlap detected)"
+            active["count"] += 1
+            execution_log.append((task.task_id, task.module))
+            time.sleep(0.1)
+            task.status = "completed"
+            task.stage = "completed"
+            active["count"] -= 1
+
+        monkeypatch.setattr(TaskManager, "_monitor_worker", fake_worker)
+
+        t_up = tm.create_task("UPSCALER", "upscale first", {}, device_id="dev_disp")
+        t_mm = tm.create_task("I2V", "minimax second", {}, device_id="dev_disp")
+        tm.start_background_task(t_up, {"g": 1})
+        tm.start_background_task(t_mm, {"g": 2})
+
+        # Both tasks were enqueued, not executed inline on the calling thread
+        deadline = time.time() + 10
+        while (t_up.status != "completed" or t_mm.status != "completed") and time.time() < deadline:
+            time.sleep(0.02)
+
+        assert t_up.status == "completed"
+        assert t_mm.status == "completed"
+        assert execution_log == [(t_up.task_id, "upscaler"), (t_mm.task_id, "minimax")]
+
+    def test_interrupt_queued_task_removes_it_from_dispatch_queue(self, monkeypatch):
+        """Interrupting a still-queued task must purge it so the dispatcher skips it."""
+        tm = TaskManager()
+        started = threading.Event()
+        release = threading.Event()
+
+        def fake_worker(self, task, prompt_graph, server_url):
+            started.set()
+            release.wait(timeout=5)
+            task.status = "completed"
+
+        monkeypatch.setattr(TaskManager, "_monitor_worker", fake_worker)
+
+        t_blocker = tm.create_task("I2V", "blocking job", {"steps": 1}, device_id="dev_q")
+        t_victim = tm.create_task("UPSCALER", "queued upscale", {}, device_id="dev_q")
+        tm.start_background_task(t_blocker, {"g": 1})
+        tm.start_background_task(t_victim, {"g": 2})
+
+        assert started.wait(timeout=5)
+        assert tm.interrupt_device_tasks(device_id="dev_q", module="upscaler") == [t_victim.task_id]
+        assert t_victim.status == "interrupted"
+        with tm._lock:
+            assert all(e[0] != t_victim.task_id for e in tm._dispatch_queue)
+
+        release.set()
+        deadline = time.time() + 10
+        while t_blocker.status != "completed" and time.time() < deadline:
+            time.sleep(0.02)
+        assert t_blocker.status == "completed"
+        assert t_victim.status == "interrupted"
+
+    def test_queued_task_reports_queue_position_message(self, monkeypatch):
+        tm = TaskManager()
+        started = threading.Event()
+        release = threading.Event()
+
+        def fake_worker(self, task, prompt_graph, server_url):
+            started.set()
+            release.wait(timeout=5)
+            task.status = "completed"
+
+        monkeypatch.setattr(TaskManager, "_monitor_worker", fake_worker)
+
+        t_blocker = tm.create_task("I2V", "occupying GPU", {}, device_id="dev_msg")
+        t_waiting = tm.create_task("UPSCALER", "waiting upscale", {}, device_id="dev_msg")
+        tm.start_background_task(t_blocker, {"g": 1})
+        assert started.wait(timeout=5)
+        tm.start_background_task(t_waiting, {"g": 2})
+
+        assert t_waiting.status == "queued"
+        assert t_waiting.stage == "pending"
+        assert "排隊中" in t_waiting.message
+        assert "1" in t_waiting.message  # exactly one job ahead
+
+        release.set()
+        deadline = time.time() + 10
+        while t_waiting.status != "completed" and time.time() < deadline:
+            time.sleep(0.02)
+        assert t_waiting.status == "completed"

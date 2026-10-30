@@ -52,8 +52,8 @@ def handle_upscale_generate(
         yield build_progress_html(f"❌ 後端伺服器離線: {msg}"), None, current_session_task, device_id
         return
 
-    # Preempt previous tasks for this device
-    task_manager.interrupt_device_tasks(device_id)
+    # No preemption: tasks now queue politely through the serial dispatcher,
+    # so submitting an upscale job no longer kills other devices' or modules' work.
 
     yield build_progress_html("⚡ 前處理中：正在上傳影片至 ComfyUI 後端..."), None, current_session_task, device_id
 
@@ -105,7 +105,7 @@ class UpscalerView(ComfyUIBaseView):
         self.stop_btn: Optional[gr.Button] = None
         self.status: Optional[gr.HTML] = None
         self.output_video: Optional[gr.Video] = None
-        self.history_gallery = HistoryGalleryComponent(task_type="UPSCALER")
+        self.history_gallery = HistoryGalleryComponent(module="upscaler")
         self.admin_tab = UpscalerAdminTab()
 
     def render(self, session_ctx: Any) -> gr.Column:
@@ -207,7 +207,8 @@ class UpscalerView(ComfyUIBaseView):
             )
 
         def handle_stop(device_id):
-            task_manager.interrupt_device_tasks(device_id)
+            # Module-scoped: stopping an upscale job must not touch minimax tasks
+            task_manager.interrupt_device_tasks(device_id, module="upscaler")
             return (
                 build_progress_html("⚠️ 放大任務已中斷", 0.0),
                 gr.update(visible=True),
@@ -227,16 +228,17 @@ class UpscalerView(ComfyUIBaseView):
             if not device_id:
                 return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
-            task = task_manager.get_active_task_for_device(device_id)
-            if not task or task.task_type != "UPSCALER":
-                task = task_manager.get_task(session_task_id, device_id=device_id)
+            # Module-scoped queries: minimax jobs never leak into the upscaler UI
+            task = task_manager.get_active_task_for_device(device_id, module="upscaler")
+            if not task:
+                task = task_manager.get_task(session_task_id, device_id=device_id, module="upscaler")
 
-            if not task or task.task_type != "UPSCALER":
+            if not task:
                 return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
             if task.status == "completed":
                 html = build_progress_html(task)
-                history_choices = get_history_dropdown_choices(device_id, task_type="UPSCALER")
+                history_choices = get_history_dropdown_choices(device_id, module="upscaler")
                 return (
                     html,
                     task.video_path,

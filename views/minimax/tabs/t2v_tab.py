@@ -160,7 +160,7 @@ class T2VTab:
             yield from handle_t2v_generate(*args, on_completed_cb=on_completed_cb)
 
         def handle_stop(device_id):
-            task_manager.interrupt_device_tasks(device_id=device_id)
+            task_manager.interrupt_device_tasks(device_id=device_id, module="minimax")
             logger.info("[T2V] User stopped generation for device '%s'", device_id)
             return (
                 build_progress_html("⚠️ 任務已被手動中斷"),
