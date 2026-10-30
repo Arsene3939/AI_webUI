@@ -3,7 +3,7 @@ Unit tests for unified logging system (logger.py).
 """
 import os
 import logging
-from logger import get_logger, init_logging, ColouredFormatter
+from utils.logger import get_logger, init_logging, ColouredFormatter
 
 
 class TestLogger:

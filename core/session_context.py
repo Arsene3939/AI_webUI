@@ -4,7 +4,7 @@ Session and device context management for strict per-device isolation.
 import uuid
 from typing import Optional, Dict, Any, List
 import gradio as gr
-from logger import get_logger
+from utils.logger import get_logger
 
 logger = get_logger("SessionContext")
 

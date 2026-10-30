@@ -18,7 +18,7 @@ from config import (
     normalize_sampler,
     normalize_scheduler,
 )
-from logger import get_logger
+from utils.logger import get_logger
 
 from .models import Task
 

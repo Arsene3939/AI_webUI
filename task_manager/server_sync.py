@@ -17,7 +17,7 @@ import requests
 
 import task_manager as _pkg
 from config import COMFY_SERVER_URL
-from logger import get_logger
+from utils.logger import get_logger
 
 from .models import Task
 

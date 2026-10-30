@@ -1,15 +1,27 @@
 """
 AI WebUI Application Entry Point.
-Modular, Object-Oriented multi-service interface hosting:
-1. ComfyUI MiniMax-H3 Video Generator
-2. ComfyUI Video Resolution Upscaler
-3. Strata Qwen3.8-flash-next LLM
+
+Routing refactor (Spec 2026-10-31, 方案A): the single mega Blocks in this file
+was split into three mounted pages living in the `webapp/` package:
+
+    /          -> last-used-page redirector
+    /minimax   -> webapp/pages_minimax.py
+    /upscaler  -> webapp/pages_upscaler.py
+    /strata    -> webapp/pages_strata.py
+    /<module>/<tab> -> pseudo tab deep links (see webapp/server.py)
+
+This file stays a stable façade: it re-exports every name tests/e2e have always
+imported from `app`, and owns `launch_webui` (uvicorn assembly + port guard).
+Dev hot-reload is no longer `python -m gradio app.py`; run.bat sets
+WEBUI_DEV_RELOAD=1 and uvicorn's reloader restarts the ASGI app on file changes.
 """
 import os
+import sys
 import time
-import uuid
-from typing import Optional, Tuple, Any, List
+import threading
+
 import gradio as gr
+import uvicorn
 
 from config import (
     COMFY_SERVER_URL,
@@ -21,21 +33,14 @@ from config import (
     QUALITY_CHOICES,
 )
 from task_manager import task_manager
-from logger import get_logger
+from utils.logger import get_logger
 
 from core.session_context import SessionContext, DEVICE_STORAGE_SECRET
 from core.admin_manager import AdminManager
 from core.port_guardian import PortGuardian
 
 from components.styles import CUSTOM_CSS, CUSTOM_HEAD_JS
-from components.header import HeaderComponent, build_header_html
-from components.dashboard_sidebar import (
-    DashboardNavComponent,
-    MODULE_MINIMAX,
-    MODULE_UPSCALER,
-    MODULE_STRATA,
-)
-from components.comfy_toolbar import ComfyToolbarComponent
+from components.header import build_header_html
 from components.media_player import build_progress_html
 from components.video_params import on_resolution_change
 from components.history_gallery import (
@@ -44,45 +49,48 @@ from components.history_gallery import (
     on_delete_history_item,
 )
 
-from views.minimax.view import MiniMaxView
-from views.minimax.tabs import (
-    I2VTab,
-    T2VTab,
-    R2VTab,
-    on_first_frame_change,
-)
+from views.minimax.tabs import on_first_frame_change
 from views.minimax.tabs.i2v_tab import handle_i2v_generate
 from views.minimax.tabs.t2v_tab import handle_t2v_generate
 from views.minimax.tabs.r2v_tab import handle_r2v_generate
-from views.upscaler.view import UpscalerView, handle_upscale_generate
-from views.strata.view import StrataView
-from views.admin.view import AdminPanelView
+from views.upscaler.view import handle_upscale_generate
+
+from webapp.shell import APP_THEME, TAB_SEGMENTS
+from webapp.server import PAGES, create_asgi_app
 
 logger = get_logger("App")
 lan_ip = get_lan_ip()
 
-# Dark app theme: the entire UI chrome (header/sidebar/status boxes) is dark by design,
-# so the gradio theme is pinned dark (light AND dark variants of each token) to stop
-# a light-OS system from rendering black text on our dark backgrounds.
-APP_THEME = gr.themes.Default(primary_hue="blue").set(
-    body_background_fill="#0b1220", body_background_fill_dark="#0b1220",
-    body_text_color="#e2e8f0", body_text_color_dark="#e2e8f0",
-    body_text_color_subdued="#94a3b8", body_text_color_subdued_dark="#94a3b8",
-    block_background_fill="#111c2e", block_background_fill_dark="#111c2e",
-    block_border_color="#243550", block_border_color_dark="#243550",
-    block_title_text_color="#e2e8f0", block_title_text_color_dark="#e2e8f0",
-    block_label_text_color="#9fb3c8", block_label_text_color_dark="#9fb3c8",
-    block_info_text_color="#94a3b8", block_info_text_color_dark="#94a3b8",
-    input_background_fill="#16233b", input_background_fill_dark="#16233b",
-    input_border_color="#334155", input_border_color_dark="#334155",
-    input_placeholder_color="#64748b", input_placeholder_color_dark="#64748b",
-    link_text_color="#38bdf8", link_text_color_dark="#38bdf8",
-    code_background_fill="#16233b", code_background_fill_dark="#16233b",
-)
+# --- Backward-compatible re-exports (tests/e2e import these from `app`) ------
+PAGE_MINIMAX = PAGES["minimax"]
+PAGE_UPSCALER = PAGES["upscaler"]
+PAGE_STRATA = PAGES["strata"]
 
-# --- Shared Tracking State for Device Notifications ---
-_device_last_reported_completed: dict = {}
-_device_last_status_html: dict = {}
+demo = PAGE_MINIMAX.blocks  # legacy name: the primary (minimax) Blocks
+device_id_state = PAGE_MINIMAX.device_id_state
+session_task_state = PAGE_MINIMAX.session_task_state
+history_dropdown = PAGE_MINIMAX.history_dropdown
+all_restored_outputs = PAGE_MINIMAX.all_restored_outputs
+
+restore_device_state = PAGE_MINIMAX.restore_device_state
+switch_manual_device_id = PAGE_MINIMAX.switch_manual_device_id
+poll_active_task_progress = PAGE_MINIMAX.poll_active_task_progress
+
+i2v_aspect_ratio = PAGE_MINIMAX.i2v_aspect_ratio
+i2v_quality_level = PAGE_MINIMAX.i2v_quality_level
+i2v_sampler = PAGE_MINIMAX.i2v_sampler
+i2v_scheduler = PAGE_MINIMAX.i2v_scheduler
+t2v_aspect_ratio = PAGE_MINIMAX.t2v_aspect_ratio
+t2v_quality_level = PAGE_MINIMAX.t2v_quality_level
+t2v_sampler = PAGE_MINIMAX.t2v_sampler
+t2v_scheduler = PAGE_MINIMAX.t2v_scheduler
+r2v_aspect_ratio = PAGE_MINIMAX.r2v_aspect_ratio
+r2v_quality_level = PAGE_MINIMAX.r2v_quality_level
+r2v_sampler = PAGE_MINIMAX.r2v_sampler
+r2v_scheduler = PAGE_MINIMAX.r2v_scheduler
+
+# per-device completion/status dedup trackers (patchable surfaces kept importable)
+from webapp.pages_minimax import _device_last_reported_completed, _device_last_status_html
 
 
 def handle_stop_generate(device_id: str):
@@ -117,359 +125,20 @@ on_add_admin_ip = AdminManager.on_add_admin_ip
 on_remove_admin_ip = AdminManager.on_remove_admin_ip
 
 
-# --- Build UI Layout ---
-# fill_width=True disables Gradio 6's mobile-first 640px container cap on desktop;
-# the actual max width is governed by the responsive rules in components/styles.py.
-with gr.Blocks(title="MiniMax-H3 AI Video WebUI", fill_width=True) as demo:
-    # 1. Strictly isolated persistent states per browser/device LocalStorage
-    session_ctx = SessionContext().render()
-    device_id_state = session_ctx.device_id_state
-    session_task_state = session_ctx.session_task_state
+def launch_webui(
+    port: int = WEBUI_PORT,
+    raise_on_error: bool = False,
+    prevent_thread_lock: bool = False,
+    quiet: bool = False,
+    **launch_kwargs,
+):
+    """
+    Launch the routed WebUI (uvicorn serving webapp.server's FastAPI app).
 
-    # 2. Header Banner & Device ID Controls
-    header_comp = HeaderComponent().render()
-    header_html = header_comp.header_html
-    edit_id_btn = header_comp.edit_id_btn
-    edit_id_row = header_comp.edit_id_row
-    manual_id_input = header_comp.manual_id_input
-    save_id_btn = header_comp.save_id_btn
-    cancel_id_btn = header_comp.cancel_id_btn
-
-    # 3. Top-Left Expandable Dashboard (Controls switching across the 3 core modules)
-    dashboard_comp = DashboardNavComponent().render()
-
-    # 4. ComfyUI Backend Control Toolbar
-    toolbar_comp = ComfyToolbarComponent().render()
-
-    # 5. Core Views Construction (OOP Modularized with dedicated Admin Tabs)
-    minimax_view = MiniMaxView()
-    upscaler_view = UpscalerView()
-    strata_view = StrataView()
-
-    minimax_container = minimax_view.render(session_ctx)
-    upscaler_container = upscaler_view.render(session_ctx)
-    strata_container = strata_view.render(session_ctx)
-
-    # Collect Admin tabs across all views (Layered within each module's tab bar)
-    admin_tab = minimax_view.admin_tab.tab
-    all_admin_tabs = [
-        minimax_view.admin_tab.tab,
-        upscaler_view.admin_tab.tab,
-        strata_view.admin_tab.tab,
-    ]
-
-    # Dropdown aliases for direct component inspection
-    i2v_aspect_ratio = minimax_view.i2v_tab.params_card.aspect_ratio
-    i2v_quality_level = minimax_view.i2v_tab.params_card.quality_level
-    i2v_sampler = minimax_view.i2v_tab.params_card.sampler
-    i2v_scheduler = minimax_view.i2v_tab.params_card.scheduler
-
-    t2v_aspect_ratio = minimax_view.t2v_tab.params_card.aspect_ratio
-    t2v_quality_level = minimax_view.t2v_tab.params_card.quality_level
-    t2v_sampler = minimax_view.t2v_tab.params_card.sampler
-    t2v_scheduler = minimax_view.t2v_tab.params_card.scheduler
-
-    r2v_aspect_ratio = minimax_view.r2v_tab.params_card.aspect_ratio
-    r2v_quality_level = minimax_view.r2v_tab.params_card.quality_level
-    r2v_sampler = minimax_view.r2v_tab.params_card.sampler
-    r2v_scheduler = minimax_view.r2v_tab.params_card.scheduler
-
-    # 6. Dashboard Switching Logic
-    def switch_active_module(choice: str):
-        is_minimax = (choice == MODULE_MINIMAX)
-        is_upscaler = (choice == MODULE_UPSCALER)
-        is_strata = (choice == MODULE_STRATA)
-        return (
-            gr.update(visible=is_minimax),
-            gr.update(visible=is_upscaler),
-            gr.update(visible=is_strata),
-        )
-
-    dashboard_comp.bind_module_change(
-        switch_active_module,
-        outputs=[minimax_container, upscaler_container, strata_container],
-    )
-
-    # 7. Auto poll timer for backend status and active task polling
-    backend_poll_timer = gr.Timer(value=0.5)
-    task_poll_timer = gr.Timer(value=1.0)
-    toolbar_comp.register_events(timer=backend_poll_timer)
-    header_comp.register_toggle_events()
-
-    # 8. Register events for each module (including each module's admin tab)
-    minimax_view.register_events(session_ctx)
-    upscaler_view.register_events(session_ctx, poll_timer=task_poll_timer)
-    strata_view.register_events(session_ctx)
-
-    # 9. Super User dynamic visibility on page load (updates all admin tabs across views)
-    def update_all_admin_tabs_visibility(request: gr.Request):
-        is_admin = AdminManager.is_super_user(request)
-        return [gr.update(visible=is_admin) for _ in all_admin_tabs]
-
-    demo.load(
-        update_all_admin_tabs_visibility,
-        outputs=all_admin_tabs,
-    )
-
-    # 10. Backward-compatible state restoration outputs (55 components)
-    history_dropdown = minimax_view.history_gallery.dropdown
-    all_restored_outputs = [
-        device_id_state,
-        session_task_state,
-        header_html,
-        history_dropdown,
-        *minimax_view.get_restore_components(),
-        *minimax_view.get_action_buttons(),
-    ]
-
-    def restore_device_state(stored_device_id: Optional[str], stored_task_id: Optional[str]):
-        """Restores inputs, parameters, and generated video for THIS specific device."""
-        if not stored_device_id:
-            stored_device_id = f"dev_{uuid.uuid4().hex[:6]}"
-
-        task = (
-            task_manager.get_task(stored_task_id, device_id=stored_device_id, module="minimax")
-            or task_manager.get_latest_task_for_device(stored_device_id, module="minimax")
-        )
-        logger.info("[Session] Device connected/restoring: %s (Active task: %s)", stored_device_id, task.task_id if task else "None")
-
-        content_updates, btn_updates = minimax_view.restore_state(task, stored_device_id)
-        history_choices = get_history_dropdown_choices(stored_device_id, module="minimax")
-        header = build_header_html(device_id=stored_device_id)
-        active_task_id = task.task_id if task else stored_task_id
-
-        return (
-            stored_device_id,
-            active_task_id,
-            header,
-            gr.update(choices=history_choices),
-            *content_updates,
-            *btn_updates,
-        )
-
-    def switch_manual_device_id(custom_id: str, current_device_id: str, session_task_id: str):
-        """Allows user to switch to a remembered device ID without exposing others."""
-        val = (custom_id or "").strip()
-        if not val:
-            return (gr.update(visible=False), *restore_device_state(current_device_id, session_task_id))
-        target_id = val if val.startswith("dev_") else f"dev_{val}"
-        logger.info("[Session] Device ID manual switch: '%s' -> '%s'", current_device_id, target_id)
-        return (gr.update(visible=False), *restore_device_state(target_id, None))
-
-    def poll_active_task_progress(stored_device_id: Optional[str], stored_task_id: Optional[str]):
-        """Polled every 1s to detect background completion or progress without full refresh."""
-        default_btns = [
-            gr.update(visible=True), gr.update(visible=False),
-            gr.update(visible=True), gr.update(visible=False),
-            gr.update(visible=True), gr.update(visible=False),
-        ]
-
-        if not stored_device_id:
-            return (
-                gr.update(),
-                gr.update(), gr.update(),
-                gr.update(), gr.update(),
-                gr.update(), gr.update(),
-                gr.update(),
-                *default_btns,
-            )
-
-        task = (
-            task_manager.get_active_task_for_device(stored_device_id, module="minimax")
-            or task_manager.get_task(stored_task_id, device_id=stored_device_id, module="minimax")
-        )
-        if not task:
-            task = task_manager.get_latest_task_for_device(stored_device_id, module="minimax")
-
-        if not task:
-            return (
-                gr.update(),
-                gr.update(), gr.update(),
-                gr.update(), gr.update(),
-                gr.update(), gr.update(),
-                gr.update(),
-                *default_btns,
-            )
-
-        if task.status in ("completed", "failed", "interrupted"):
-            if _device_last_reported_completed.get(stored_device_id) == task.task_id:
-                return (
-                    gr.update(),
-                    gr.update(), gr.update(),
-                    gr.update(), gr.update(),
-                    gr.update(), gr.update(),
-                    gr.update(),
-                    *default_btns,
-                )
-
-            _device_last_reported_completed[stored_device_id] = task.task_id
-            history_choices = get_history_dropdown_choices(stored_device_id, module="minimax")
-            progress_html = build_progress_html(task)
-            video_val = task.video_path if (task.status == "completed" and task.video_path and os.path.exists(task.video_path)) else gr.update()
-
-            if task.task_type == "I2V":
-                return (
-                    task.task_id,
-                    progress_html, video_val,
-                    gr.update(), gr.update(),
-                    gr.update(), gr.update(),
-                    gr.update(choices=history_choices),
-                    *default_btns,
-                )
-            elif task.task_type == "T2V":
-                return (
-                    task.task_id,
-                    gr.update(), gr.update(),
-                    progress_html, video_val,
-                    gr.update(), gr.update(),
-                    gr.update(choices=history_choices),
-                    *default_btns,
-                )
-            elif task.task_type == "R2V":
-                return (
-                    task.task_id,
-                    gr.update(), gr.update(),
-                    gr.update(), gr.update(),
-                    progress_html, video_val,
-                    gr.update(choices=history_choices),
-                    *default_btns,
-                )
-
-        if task.status in ("queued", "running"):
-            _device_last_reported_completed.pop(stored_device_id, None)
-            progress_html = build_progress_html(task)
-
-            i2v_btn_st = gr.update(visible=False) if task.task_type == "I2V" else gr.update(visible=True)
-            i2v_stop_st = gr.update(visible=True) if task.task_type == "I2V" else gr.update(visible=False)
-            t2v_btn_st = gr.update(visible=False) if task.task_type == "T2V" else gr.update(visible=True)
-            t2v_stop_st = gr.update(visible=True) if task.task_type == "T2V" else gr.update(visible=False)
-            r2v_btn_st = gr.update(visible=False) if task.task_type == "R2V" else gr.update(visible=True)
-            r2v_stop_st = gr.update(visible=True) if task.task_type == "R2V" else gr.update(visible=False)
-            active_btns = [i2v_btn_st, i2v_stop_st, t2v_btn_st, t2v_stop_st, r2v_btn_st, r2v_stop_st]
-
-            last_html = _device_last_status_html.get(stored_device_id)
-            if last_html == progress_html:
-                return (
-                    gr.update(),
-                    gr.update(), gr.update(),
-                    gr.update(), gr.update(),
-                    gr.update(), gr.update(),
-                    gr.update(),
-                    *active_btns,
-                )
-            _device_last_status_html[stored_device_id] = progress_html
-
-            if task.task_type == "I2V":
-                return (
-                    task.task_id,
-                    progress_html, gr.update(),
-                    gr.update(), gr.update(),
-                    gr.update(), gr.update(),
-                    gr.update(),
-                    *active_btns,
-                )
-            elif task.task_type == "T2V":
-                return (
-                    task.task_id,
-                    gr.update(), gr.update(),
-                    progress_html, gr.update(),
-                    gr.update(), gr.update(),
-                    gr.update(),
-                    *active_btns,
-                )
-            elif task.task_type == "R2V":
-                return (
-                    task.task_id,
-                    gr.update(), gr.update(),
-                    gr.update(), gr.update(),
-                    progress_html, gr.update(),
-                    gr.update(),
-                    *active_btns,
-                )
-
-        return (
-            gr.update(),
-            gr.update(), gr.update(),
-            gr.update(), gr.update(),
-            gr.update(), gr.update(),
-            gr.update(),
-            *default_btns,
-        )
-
-    # 11. Connect recovery and page reload triggers
-    demo.load(
-        restore_device_state,
-        inputs=[device_id_state, session_task_state],
-        outputs=all_restored_outputs,
-    )
-
-    minimax_view.i2v_tab.player_card.recover_btn.click(
-        restore_device_state,
-        inputs=[device_id_state, session_task_state],
-        outputs=all_restored_outputs,
-    )
-    minimax_view.t2v_tab.player_card.recover_btn.click(
-        restore_device_state,
-        inputs=[device_id_state, session_task_state],
-        outputs=all_restored_outputs,
-    )
-    minimax_view.r2v_tab.player_card.recover_btn.click(
-        restore_device_state,
-        inputs=[device_id_state, session_task_state],
-        outputs=all_restored_outputs,
-    )
-
-    # 12. Connect manual device ID switch triggers
-    save_id_btn.click(
-        switch_manual_device_id,
-        inputs=[manual_id_input, device_id_state, session_task_state],
-        outputs=[edit_id_row, *all_restored_outputs],
-    )
-    manual_id_input.submit(
-        switch_manual_device_id,
-        inputs=[manual_id_input, device_id_state, session_task_state],
-        outputs=[edit_id_row, *all_restored_outputs],
-    )
-
-    # 13. Auto-poll active task progress every 1s
-    task_poll_timer.tick(
-        poll_active_task_progress,
-        inputs=[device_id_state, session_task_state],
-        outputs=[
-            session_task_state,
-            minimax_view.i2v_tab.player_card.status, minimax_view.i2v_tab.player_card.output_video,
-            minimax_view.t2v_tab.player_card.status, minimax_view.t2v_tab.player_card.output_video,
-            minimax_view.r2v_tab.player_card.status, minimax_view.r2v_tab.player_card.output_video,
-            history_dropdown,
-            *minimax_view.get_action_buttons(),
-        ],
-    )
-
-
-demo.queue(default_concurrency_limit=None)
-
-
-def launch_webui(port: int = WEBUI_PORT, raise_on_error: bool = False, **launch_kwargs):
-    """Launches the Gradio WebUI strictly on the specified port (default 7860)."""
-    import sys
-    import threading
-
-    if getattr(demo, "_is_running_in_reload_thread", False):
-        # gradio watch 模式（run.bat 的 `python -m gradio app.py`）熱重載：reloader 會重跑
-        # app.py 並把重建的 demo 換進執行中的伺服器，但不會重綁 port。theme/css/head 是
-        # 在 launch() 最前面幾行才被套用到 Blocks 上的，因此重載執行緒中仍必須呼叫
-        # launch()——它套用完樣式會在綁 port 前自動 return，不會重複啟動伺服器。
-        # 少了這一步，改完 components/styles.py 熱重載後自訂樣式會全部遺失，
-        # 只能整台重啟才看得到改动。
-        demo.launch(theme=APP_THEME, css=CUSTOM_CSS, head=CUSTOM_HEAD_JS)
-        return demo
-
-    if (
-        getattr(demo, "is_running", False)
-        or (os.environ.get("GRADIO_WATCH_DIRS") and threading.current_thread() is not threading.main_thread())
-    ):
-        return demo
-
+    prevent_thread_lock=True (used by the e2e harness): starts uvicorn in a
+    daemon thread and returns the uvicorn Server handle — set `handle.should_exit
+    = True` to stop it. Otherwise blocks until interrupted.
+    """
     if PortGuardian.is_port_in_use(port):
         PortGuardian.print_port_conflict_help(port)
         if raise_on_error:
@@ -483,38 +152,40 @@ def launch_webui(port: int = WEBUI_PORT, raise_on_error: bool = False, **launch_
     except Exception as e:
         logger.warning("Orphaned-task reconciliation failed: %s", e)
 
+    extra_allowed = []
+    extra = launch_kwargs.pop("allowed_paths", None)
+    if extra:
+        extra_allowed = extra if isinstance(extra, list) else [extra]
+
     print("=" * 60)
     print(f"AI WebUI Multi-Module Platform Starting (Port: {port})...")
-    print(f"Local Access: http://127.0.0.1:{port}")
-    print(f"Mobile LAN Access: http://{lan_ip}:{port}")
+    print(f"Local Access: http://127.0.0.1:{port}  (→ 上次使用的頁面)")
+    print(f"Pages: /minimax /upscaler /strata   Mobile LAN: http://{lan_ip}:{port}")
     print(f"ComfyUI Backend: {COMFY_SERVER_URL}")
     print("=" * 60)
-    logger.info("Starting Gradio WebUI on http://%s:%s (Local: http://127.0.0.1:%s, Mobile: http://%s:%s)",
-                WEBUI_HOST, port, port, lan_ip, port)
+    logger.info("Starting routed WebUI (uvicorn) on http://%s:%s", WEBUI_HOST, port)
 
-    allowed = [OUTPUT_DIR]
-    if "allowed_paths" in launch_kwargs:
-        extra_paths = launch_kwargs.pop("allowed_paths")
-        if isinstance(extra_paths, list):
-            allowed.extend(extra_paths)
-        else:
-            allowed.append(extra_paths)
+    asgi_app = create_asgi_app(extra_allowed_paths=extra_allowed or None)
+    log_level = "warning" if quiet else "info"
 
-    kwargs = {
-        "server_name": WEBUI_HOST,
-        "server_port": port,
-        "share": False,
-        "theme": APP_THEME,
-        "css": CUSTOM_CSS,
-        "head": CUSTOM_HEAD_JS,
-        "allowed_paths": list(set(allowed)),
-    }
-    kwargs.update(launch_kwargs)
+    if prevent_thread_lock:
+        config = uvicorn.Config(asgi_app, host=WEBUI_HOST, port=port, log_level=log_level, access_log=False)
+        server = uvicorn.Server(config)
+        threading.Thread(target=server.run, name="WebUI-uvicorn", daemon=True).start()
+        deadline = time.time() + 30
+        while not server.started and not server.should_exit and time.time() < deadline:
+            time.sleep(0.1)
+        if not server.started:
+            if raise_on_error:
+                raise OSError(f"WebUI uvicorn server failed to start on port {port}.")
+            sys.exit(1)
+        return server
+
     try:
-        demo.queue(default_concurrency_limit=None)
-        return demo.launch(**kwargs)
+        uvicorn.run(asgi_app, host=WEBUI_HOST, port=port, log_level=log_level, access_log=False)
+        return asgi_app
     except OSError as e:
-        if "Cannot find empty port" in str(e) or "10048" in str(e):
+        if "10048" in str(e) or "address already in use" in str(e).lower():
             PortGuardian.print_port_conflict_help(port)
             if raise_on_error:
                 raise
@@ -522,5 +193,36 @@ def launch_webui(port: int = WEBUI_PORT, raise_on_error: bool = False, **launch_
         raise
 
 
+def _run_dev_reload():
+    """run.bat path: uvicorn reloader restarts the ASGI app on any .py change.
+    (Replaces the old `python -m gradio app.py` watch mode — styles/theme now
+    ride the mount calls, so a reload re-applies everything automatically.)"""
+    if PortGuardian.is_port_in_use(WEBUI_PORT):
+        PortGuardian.print_port_conflict_help(WEBUI_PORT)
+        sys.exit(1)
+    try:
+        task_manager.reconcile_orphaned_tasks()
+    except Exception as e:
+        logger.warning("Orphaned-task reconciliation failed: %s", e)
+    print("=" * 60)
+    print(f"AI WebUI Multi-Module Platform (Auto-Reload, Port: {WEBUI_PORT})...")
+    print(f"Local Access: http://127.0.0.1:{WEBUI_PORT}   LAN: http://{lan_ip}:{WEBUI_PORT}")
+    print("Pages: /minimax  /upscaler  /strata")
+    print("=" * 60)
+    uvicorn.run(
+        "webapp.server:create_asgi_app",
+        factory=True,
+        host=WEBUI_HOST,
+        port=WEBUI_PORT,
+        reload=True,
+        reload_dirs=[os.path.dirname(os.path.abspath(__file__))],
+        log_level="info",
+        access_log=False,
+    )
+
+
 if __name__ == "__main__":
-    launch_webui()
+    if os.environ.get("WEBUI_DEV_RELOAD") == "1":
+        _run_dev_reload()
+    else:
+        launch_webui()

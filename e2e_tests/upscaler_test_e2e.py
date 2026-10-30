@@ -2,7 +2,8 @@
 Video Resolution Upscaler WebUI End-to-End (E2E) Test Suite.
 Validates the complete real-world user lifecycle for video upscaling:
   1. ComfyUI backend startup & connection (/system_stats, check_server)
-  2. Frontend WebUI server startup (launch_webui, HTTP 200 health probe on / and /config)
+  2. Frontend WebUI server startup (launch_webui, HTTP 200 probes: / redirector,
+     /upscaler/config, deep link /upscaler/admin — routing refactor 2026-10-31)
   3. Simulating user opening the webpage & discovering models from F:\\Comfy_models\\upscale_models
   4. Simulating user submitting an upscale task request via live WebUI API (/handle_upscale_generate)
   5. Monitoring real-time upscaling progress stream until 100% completion
@@ -213,7 +214,9 @@ class UpscalerE2ETestRunner:
         self.backend_url = None
         self.webui_port = None
         self.webui_url = None
+        self.webui_server = None
         self.client = None
+        self.minimax_client = None
         self.temp_dir = tempfile.mkdtemp(prefix="upscaler_e2e_")
         self.results = []
         self.tracked_task_ids = []
@@ -250,7 +253,7 @@ class UpscalerE2ETestRunner:
         t0 = time.time()
         try:
             import config
-            import comfy_client
+            from core import comfy_client
 
             if self.use_live_server:
                 self.backend_url = config.COMFY_SERVER_URL
@@ -290,19 +293,28 @@ class UpscalerE2ETestRunner:
             print(f"[*] Launching WebUI Server on {self.webui_url}...")
 
             os.environ["TEST_OVERRIDE_STATUS"] = "OK"
-            app.launch_webui(port=self.webui_port, raise_on_error=True, prevent_thread_lock=True, quiet=True)
+            # Routing refactor: launch_webui now returns the uvicorn Server handle
+            self.webui_server = app.launch_webui(port=self.webui_port, raise_on_error=True, prevent_thread_lock=True, quiet=True)
 
-            # Probe HTTP Root (/)
+            # Probe HTTP Root (/ -> last-page redirector HTML)
             resp_root = requests.get(f"{self.webui_url}/", timeout=6)
             assert resp_root.status_code == 200, f"WebUI root returned HTTP {resp_root.status_code}"
+            assert "webui_last_page" in resp_root.text, "WebUI root is not the last-page redirector"
 
-            # Probe HTTP Config (/config)
-            resp_config = requests.get(f"{self.webui_url}/config", timeout=6)
-            assert resp_config.status_code == 200, f"WebUI /config returned HTTP {resp_config.status_code}"
-            assert "components" in resp_config.json(), "Missing components in WebUI /config payload"
+            # Probe HTTP Config (/upscaler/config — routed mount, was /config)
+            resp_config = requests.get(f"{self.webui_url}/upscaler/config", timeout=6)
+            assert resp_config.status_code == 200, f"WebUI /upscaler/config returned HTTP {resp_config.status_code}"
+            assert "components" in resp_config.json(), "Missing components in WebUI /upscaler/config payload"
 
-            # Connect Gradio client to the live WebUI server
-            self.client = gradio_client.Client(self.webui_url)
+            # Tab pseudo-route deep link must serve the upscaler page index (spec A-3)
+            resp_deep = requests.get(f"{self.webui_url}/upscaler/admin", timeout=6, headers={"Accept": "text/html"})
+            assert resp_deep.status_code == 200, f"Deep link /upscaler/admin returned HTTP {resp_deep.status_code}"
+            assert "webui_last_page" in resp_deep.text, "Deep link /upscaler/admin did not serve the upscaler index"
+
+            # Connect Gradio clients to the live WebUI server (upscaler mount is the
+            # primary target; the cross-module step needs a minimax-mount client too)
+            self.client = gradio_client.Client(f"{self.webui_url}/upscaler")
+            self.minimax_client = gradio_client.Client(f"{self.webui_url}/minimax")
 
             self.log_step("Step 2: Frontend WebUI Server Launch & Health Probe", True,
                           f"Bound to port {self.webui_port}, HTTP 200 OK & Gradio API connected", time.time() - t0)
@@ -436,7 +448,8 @@ class UpscalerE2ETestRunner:
             Image.new("RGBA", (1, 1), (128, 128, 128, 255)).save(png_path)
 
             print("[*] Cross-module: submitting MiniMax I2V job...")
-            mm_job = self.client.submit(
+            # /handle_i2v_generate lives on the minimax mount, not the upscaler one
+            mm_job = self.minimax_client.submit(
                 gradio_client.handle_file(png_path),   # first_frame
                 None,                                  # last_frame
                 "Cross-module queueing e2e shot",      # prompt
@@ -615,8 +628,16 @@ class UpscalerE2ETestRunner:
         task records, generated fake videos, archived input files, and the temp dir
         (Spec 2026-10-31 task 4: e2e runs must leave zero residue in outputs/)."""
         try:
-            import app
-            app.demo.close()
+            if self.webui_server is not None:
+                from core.port_guardian import PortGuardian
+                self.webui_server.should_exit = True
+                # give the uvicorn serve loop time to close its listening socket
+                deadline = time.time() + 5
+                while time.time() < deadline:
+                    if not PortGuardian.is_port_in_use(self.webui_port):
+                        break
+                    time.sleep(0.2)
+                self.webui_server = None
         except Exception:
             pass
 

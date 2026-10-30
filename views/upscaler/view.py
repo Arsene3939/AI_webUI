@@ -14,9 +14,9 @@ from components.history_gallery import HistoryGalleryComponent, get_history_drop
 from views.upscaler.admin_tab import UpscalerAdminTab
 from views.upscaler.workflow_builder import build_upscale_workflow
 from config import get_upscale_models, get_server_status, SERVER_STATUS_UPDATING
-from comfy_client import upload_media_file, check_server
+from core.comfy_client import upload_media_file, check_server
 from task_manager import task_manager, Task
-from logger import get_logger
+from utils.logger import get_logger
 
 logger = get_logger("UpscalerView")
 

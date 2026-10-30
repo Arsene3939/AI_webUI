@@ -231,18 +231,27 @@ def normalize_scheduler(val: Any) -> str:
 
 
 def set_comfy_server_url(url: str):
-    """Dynamically updates the ComfyUI server URL and syncs imported references."""
+    """Dynamically updates the ComfyUI server URL and syncs imported references.
+
+    Attribute-name scan (not a hardcoded module list): after the core/ + task_manager/
+    package splits, `from config import COMFY_SERVER_URL` copies live in
+    core.comfy_client, components.comfy_toolbar and every task_manager submodule —
+    a fixed name list silently went stale and e2e traffic hit the default 8188.
+    Scanning loaded modules keeps working no matter where files move next."""
     global COMFY_SERVER_URL, COMFY_WS_URL
     COMFY_SERVER_URL = url
     COMFY_WS_URL = url.replace("http://", "ws://").replace("https://", "wss://")
     import sys
-    for mod_name in ["comfy_client", "task_manager", "app"]:
-        if mod_name in sys.modules:
-            mod = sys.modules[mod_name]
-            if hasattr(mod, "COMFY_SERVER_URL"):
-                setattr(mod, "COMFY_SERVER_URL", url)
-            if hasattr(mod, "COMFY_WS_URL"):
-                setattr(mod, "COMFY_WS_URL", COMFY_WS_URL)
+    for mod in list(sys.modules.values()):
+        if mod is None or getattr(mod, "__name__", "") == __name__:
+            continue
+        mod_vars = getattr(mod, "__dict__", None)
+        if not isinstance(mod_vars, dict):
+            continue
+        if "COMFY_SERVER_URL" in mod_vars:
+            mod_vars["COMFY_SERVER_URL"] = url
+        if "COMFY_WS_URL" in mod_vars:
+            mod_vars["COMFY_WS_URL"] = COMFY_WS_URL
 
 
 

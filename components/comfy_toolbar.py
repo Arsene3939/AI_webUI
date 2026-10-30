@@ -8,7 +8,7 @@ from config import (
     SERVER_STATUS_UPDATING,
     get_server_status,
 )
-from comfy_client import (
+from core.comfy_client import (
     check_server,
     check_system_resources,
     start_comfyui_backend,
@@ -16,7 +16,7 @@ from comfy_client import (
 )
 from core.admin_manager import AdminManager
 from task_manager import task_manager
-from logger import get_logger
+from utils.logger import get_logger
 
 logger = get_logger("ComfyToolbar")
 

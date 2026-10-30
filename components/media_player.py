@@ -3,7 +3,7 @@ Video player output card and progress bar component.
 """
 from typing import Optional, Any, Tuple
 import gradio as gr
-from frame_extractor import extract_last_frame
+from utils.frame_extractor import extract_last_frame
 
 
 def build_progress_html(task_or_msg: Any) -> str:

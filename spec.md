@@ -42,55 +42,7 @@
 - 很多東西其實使用者根本不在乎，例如：支援電腦與手機... 
 - 開始施工前要改SERVER_STATUS旗標
 
-## 1. 評估taskmanager是否應該模組化
-> **✅ 2026-10-31 (第四輪) 已依使用者指示實作**：以「不改變外部 import」為原則完成 facade 拆分，
-> 下方評估保留作決策背景。
-### 現況分析
-- `task_manager.py` 原本 953 行、單一 `TaskManager` 類別（27 個方法）＋ `Task` dataclass ＋模組級單例。
-  职责可分成 7 塊：
-  1. 任務模型與欄位（Task/params/還原）
-  2. 歷史持久化（`_load_history`/`_save_history`/`delete_task`/`delete_failed...`）
-  3. 上傳媒體歸檔（`_archive_file`，配合 `outputs/inputs/`）
-  4. FIFO 串列調度器（`_dispatcher_loop`＋GPU 隔離＋排隊訊息）
-  5. 每任務監控執行緒（`_monitor_worker` 188 行、`_ws_listener` 63 行：HTTP 輪詢＋WS＋看門狗）
-  6. 後端同步/救回（`sync_task_with_server`/`reconcile_orphaned_tasks`/`_prompt_alive_on_server`）
-  7. 裝置查詢與中斷 API（get_*、interrupt_*）
-### 評估
-| 面向 | 評估 |
-|---|---|
-| 目前規模 | 953 行尚在「單一領域模組」可讀範圍內；真正大的只有 `_monitor_worker`（188 行） |
-| 測試現況 | 153→156 項單元測試直接打這個模組（monkeypatch 檔案路徑／requests），是重構安全網 |
-| 風險 | 全專案 8 個以上的 import 端都吃 `task_manager` 單例；拆分後單例/執行緒/鎖若分屬不同模組，容易引入狀態不同步的隱蔽 bug |
-| 效益 | 拆檔不會帶來新功能，只會改善可讀性；目前唯一的痛点是監控執行緒混雜輪詢/WS/進度解析 |
-### 結論（建議）
-- **現階段不建議大拆**；維持 `task_manager.py` 作為 facade（外部 import 面不變）。
-- 若日後要動監控邏輯（例如 strata 任務納入管理器、進度協定變更），屆時再按縫隙抽出：
-  `task_models.py`（Task 欄位/序列化）→ `history_store.py`（讀寫/清除歷史與歸檔）→
-  `comfy_progress.py`（`_monitor_worker`＋`_ws_listener` 的純輪詢/WS 協定），
-  調度器與裝置 API 留在 TaskManager。順序由風險最低（models）開始。
-### 實施紀錄（2026-10-31 第四輪，依使用者指示提前執行）
-- 使用者指示：「以不改變 app 的 import 為原則，task_manager 自己再去 import 其他模組」。
-- `task_manager.py` → **`task_manager/` package（facade）**：
-  - `__init__.py`：外部介面＋**可 monkeypatch 的常數面**（`HISTORY_FILE`/`INPUTS_ARCHIVE_DIR`/
-    `OUTPUT_DIR`/`requests`/`queue_prompt`/`download_output_file`）。所有 import 端
-    （app/core/components/views/e2e/tests）**一行都不用改**。
-  - `models.py`＝Task＋裝置比對；`history_store.py`＝歷史持久化/殭屍降格；
-    `media_archive.py`＝上傳歸檔/清除；`server_sync.py`＝/history+/queue 同步、orphan 核對、
-    prompt 存活探測；`comfy_progress.py`＝提交＋WS 監聽＋輪詢看門狗；
-    `manager.py`＝TaskManager（註冊表/裝置查詢/FIFO 調度器/單例）。
-  - 關鍵機制：子模組以 `import task_manager as _pkg` **延遲讀取** facade 常數與 comfy_client 名稱，
-    因此 `monkeypatch.setattr(task_manager, "HISTORY_FILE", ...)`、`@patch("task_manager.queue_prompt")`、
-    `@patch("task_manager.requests.get")` 等測試打樁在呼叫點照常生效（conftest/tests/e2e 零修改）。
-  - `TaskManager._monitor_worker`/`_save_history`/`_ws_listener` 保留為薄委派（測試直接 patch/呼叫它們）。
-- 順帶修出一個被使用者改 `DEFAULT_QUALITY_LEVEL`（5→1 極速預覽）後浮現的 config bug：
-  `normalize_quality_choice` 的 MP 解析分支用 `quality_level_to_mp`（對垃圾值靜默回 1.0 MP），
-  導致無法辨識的值永遠被映射到 1.0 MP 檔位、永遠輪不到 `DEFAULT_QUALITY_LEVEL` fallback。
-  修法＝新增 `_parse_mp_strict()`（無法解析回 None），garbage 一律落到新預設值；
-  `quality_level_to_mp` 本身的寬鬆 1.0 fallback 維持不影響其他呼叫端。
-  （test_config 內兩條靠「預設恰好是 1.0 MP」巧合成立的斷言已改為直接驗證語義。）
-- 驗證：unit tests **156 項全數通過**（拆分前後同數）；minimax E2E 8 階段全綠
-  （提交/排队/WS 進度/下載/歷史刪除全程走拆分後路徑）、零殘留。
-## 2. 評估以網頁路徑(/)分開管理頁面的可行性
+## 1. 評估以網頁路徑(/)分開管理頁面的可行性
 - 這樣做是不是可以實現使用者重新整理網頁時，會留在原本頁面的機制
 ### 現況分析
 - 目前是**單一 Blocks**：各 view（MiniMaxView/UpscalerView/strata）在 `views/` 已類別化，但它們全部
@@ -109,7 +61,7 @@
 - **可行**，而且 A 是正解（真正實現「刷新留在原頁」＋可收藏/分享各模組 URL），但屬於中等規模的啟動重構，
   建議列為獨立工程再排期；views/ 的類別化結構已經替 A 鋪好路。
 - 如果只想先解決「重新整理跑回首頁分頁」這個小痛点，可先做 B（約 20 行 JS）過渡，日後升級到 A。
-### 方案 A 詳細規劃（尚未實作）
+### 方案 A 詳細規劃（✅ 已實作，2026-10-31 第四輪，見文末完成紀錄）
 #### A-1. 階層規劃（URL 與檔案結構）〔2026-10-31 依使用者構想修訂〕
 ```
 URL：
@@ -176,17 +128,59 @@ URL：
 9. 完成紀錄寫入 spec、SERVER_STATUS 恢復 OK。
 - 粗估：spike 半天；完整實施 1.5～2.5 個工作日當量（tab 假路由多半天～一天）；
   風險集中在啟動棧、假路由 JS、e2e 適配。
-## 3. UI裡的奇怪文字方塊
-- 參考"E:\Screenshots\螢幕擷取畫面 2026-10-31 035820.png"，該圖片中，"啟動後端模型"按鈕跟"提取最後一幀"按鈕底下，都有一個空白的文字方塊(而且是兩層)，它們分別對應到的是伺服器狀態回饋欄，以及提取last frame時的文字提示欄。能讓他們像任務的狀態回饋欄一樣不被任何方塊包著、自然的排版在網頁UI中嗎?
-### 根因
-- 兩個方塊是 `gr.Markdown("", elem_classes=["backend-status-box"])`：
-  `comfy_toolbar.py`（後端狀態訊息）與 `media_player.py`（最後一幀提示訊息）。
-  「兩層」= 我們的 `.backend-status-box` CSS 自帶背景/框線/min-height 48px 畫了一層，
-  gradio 的 `.block` 包装層又被主題描了一層 ⇒ 空訊息時變成兩層空白方塊。
-### 解法
-- `styles.py`：`.backend-status-box` 改為**無描繪的自然文字行**（transparent、無框線/內距、
-  min-height 1.6em 保留一行高度防跳動、0.9rem 淺色字），並用
-  `.block:has(> .backend-status-box)` 把包装層的背景/框線也脫掉（兩種 nesting 情境都罩住）。
-- 順手移除 `res-display-box` 全部 CSS：查證全專案**沒有任何元件使用**此 class（死 CSS）。
-- 其餘同 class 的 feedback（3 個 admin tab 的操作訊息）一併變成同款自然文字行。
-- 元件檔（comfy_toolbar/media_player）不用改，純 CSS 修正＋3 項防回歸測試。
+
+---
+
+> **✅ 2026-10-31 (第四輪) 完成紀錄：方案 A 路由重構已實作，A-3 全部 9 步完成**
+>
+> **新階層（與 A-1 一致）**
+> - `webapp/shell.py`：`APP_THEME`（自 app.py 搬來）、`TAB_SEGMENTS` 假路由表、
+>   `TAB_ROUTER_JS`（pathname⇄tab 雙向同步＋`last_page` 寫入）、`WebPageScaffold` 共用外殼
+>   （SessionContext／header／sidebar／toolbar／雙 timer）。
+> - `webapp/pages_minimax|pages_upscaler|pages_strata.py`：各頁一個 `gr.Blocks`（PAGE 單例），
+>   minimax 頁帶回 55-output `restore_device_state`、進度輪詢、元件別名。
+> - `webapp/server.py`：`create_asgi_app()`（uvicorn factory）→ `/` 讀 `webui_last_page` 的 JS 導向頁、
+>   `mount_gradio_app`×3（theme/css/head 掛在 mount 上）、HTTP 中介層只對**已知 tab 段**的
+>   GET html 導寫回模組 index（紅線遵守：tab ≠ mount）。
+> - `app.py` 变薄身 façade：再匯出 `demo`/`all_restored_outputs`/`restore_device_state` 等
+>   全部既有測試/e2e 依賴名稱；`launch_webui()` 改組裝 uvicorn（PortGuardian、reconcile、banner 保留；
+>   `prevent_thread_lock=True` 回傳 uvicorn Server handle 供 e2e 關機）。
+> - `run.bat`：`-m gradio app.py` → `WEBUI_DEV_RELOAD=1` + `python app.py`（uvicorn reload 監整個專案 .py；
+>   舊「reload 執行緒補 launch 套樣式」機制隨之退役，樣式現在由 mount 參數每請求生效）。
+> - sidebar：radio → 三个 `<a class="dashboard-link">` 頁面連結（自頁 high-light）。
+>
+> **連帶修復（重構過程中挖出的既有地雷）**
+> - `config.set_comfy_server_url()` 的同步清單還掛著搬目錄前的模組名（`comfy_client`），
+>   且漏掉 task_manager 拆分後的子模組 → e2e 上傳打到預設 8188。已改為**掃 sys.modules 屬性名**
+>   （對未來搬檔免疫）。這是 task_manager 模組化＋根目錄整理兩輪疊出來的過期引用。
+>
+> **測試**
+> - 刪 `tests/test_reload_style_guard.py`（被退役的機制）；新增 `tests/test_webapp_routing.py`
+>   （掛載/config、index 帶 css+theme+head、全部 tab 深連結、未知段不誤導寫、`/` 導向頁、router JS
+>   的 TAB_MAP 是合法 JSON）；`TestDashboardSidebar` 改驗三條連結＋active 高亮。
+> - 單元：**163 全綠**（52s）。
+> - minimax e2e：Step 2 探測改 `/`(導向頁)+`/minimax/config`+深連結 `/minimax/i2v`，Client base 改
+>   `.../minimax`，關機改 `server.should_exit` → **8 步全綠**。
+> - upscaler e2e：同上（`/upscaler/config`、`/upscaler/admin`），跨模組步驟因 `/handle_i2v_generate`
+>   現在只存在于 minimax 掛載，新增第二支 `minimax_client` → **9 步全綠**（含 Step 6.5）。
+> - dev 自動重載實測：改 `styles.py` → uvicorn 重載後新樣式標記 1 秒內出現在 `/minimax/` index、
+>   theme/CSS 標記全部仍在 → 熱重載丟樣式的老問題在新架構下結構性消失。
+>
+> **已知邊界（升級 gradio 時要重驗）**
+> - 深連結 JS 依賴 gradio 內部 DOM（`.tab-nav` 的 nth button）；路由測試只守伺服器端，
+>   前端部分靠 e2e 深連結探測＋人工巡視。
+> - upscaler/strata 頁的手動裝置 ID 切換為輕量語意（只換 BrowserState+重繪 header，
+>   不做 minimax 式表單回填）；task 狀態由各自輪詢 timer 接手。
+> - SERVER_STATUS 已恢復 OK。本輪未 commit（未獲指示）。
+>
+> **修復記錄（2026-10-31 同日，使用者回報）**
+> 1. **開頁/重新整理彈空白錯誤框**：`InvalidComponentError: Tab Component not a valid
+>    output component`。原因＝單輸出 load handler 回傳 `[gr.update(...)]`（list 包一層）；
+>    gradio 只對**多輸出** fn 解包 list，單輸出時整個 list 被當成 Tab slot 的原始值 →
+>    postprocess 分支直接 raise。舊單頁版沒事是因為回傳 3 個 updates 對 3 個 Tab 輸出（會解包）。
+>    修正：三頁的 `update_admin_tab_visibility` 直接回傳 update dict。
+>    防回歸：`test_webapp_routing.py` 新增「重放每頁所有 load 依賴走 process_api」測試
+>    （含 55-output 還原依賴），單位測試 164 全綠、兩套 e2e 全綠。
+> 2. **log 噪音**：uvicorn 存取日誌（每個 0.5s 輪詢都印一行 HTTP response）已在
+>    `launch_webui` 兩條路徑與 dev-reload 全部 `access_log=False` 關閉；
+>    現在只留啟動、重載與錯誤訊息。

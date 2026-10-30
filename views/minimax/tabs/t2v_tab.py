@@ -22,11 +22,11 @@ from config import (
     SERVER_STATUS_UPDATING,
     get_server_status,
 )
-from workflow_builder import build_t2v_workflow
+from core.workflow_builder import build_t2v_workflow
 from task_manager import task_manager
 from components.video_params import VideoParamsComponent
 from components.media_player import VideoPlayerCardComponent, ActionButtonsComponent, build_progress_html
-from logger import get_logger
+from utils.logger import get_logger
 
 logger = get_logger("T2VTab")
 

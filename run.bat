@@ -12,13 +12,16 @@ if not exist "%PYTHON_EXE%" (
     exit /b 1
 )
 
+set "WEBUI_DEV_RELOAD=1"
+
 echo ==========================================================
-echo Starting MiniMax-H3 Gradio WebUI in Auto-Reload Mode...
-echo (Changes to .py files will automatically reload the webpage)
+echo Starting MiniMax-H3 AI WebUI in Auto-Reload Mode...
+echo (Changes to .py files will automatically reload the server)
+echo Pages: http://127.0.0.1:7860/minimax  /upscaler  /strata
 echo ==========================================================
 echo.
 
-"%PYTHON_EXE%" -m gradio app.py
+"%PYTHON_EXE%" app.py
 
 if errorlevel 1 (
     echo.

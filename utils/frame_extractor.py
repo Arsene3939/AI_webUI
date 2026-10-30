@@ -11,7 +11,7 @@ import subprocess
 from typing import Optional
 
 from config import OUTPUT_DIR
-from logger import get_logger
+from utils.logger import get_logger
 
 logger = get_logger("FrameExtractor")
 

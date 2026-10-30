@@ -5,7 +5,7 @@ from typing import Optional, Any
 import gradio as gr
 from core.base_view import BaseView
 from views.strata.admin_tab import StrataAdminTab
-from logger import get_logger
+from utils.logger import get_logger
 
 logger = get_logger("StrataView")
 

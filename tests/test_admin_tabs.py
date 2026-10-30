@@ -106,25 +106,24 @@ class TestAdminTabHierarchy:
 
 class TestDashboardSidebar:
     def test_sidebar_dashboard_structure(self):
-        """Ensures Dashboard uses gr.Sidebar with 3 simple options and no dropdowns."""
-        from components.dashboard_sidebar import (
-            DashboardNavComponent,
-            MODULE_MINIMAX,
-            MODULE_UPSCALER,
-            MODULE_STRATA,
-        )
+        """Ensures Dashboard uses gr.Sidebar with 3 page links (/minimax /upscaler /strata).
+        (Routing refactor 2026-10-31: the in-page radio switcher became real page links.)"""
+        from components.dashboard_sidebar import DashboardNavComponent, MODULE_MINIMAX
 
         with gr.Blocks():
-            comp = DashboardNavComponent()
+            comp = DashboardNavComponent(active_module=MODULE_MINIMAX)
             comp.render()
 
             assert isinstance(comp.sidebar, gr.Sidebar)
-            assert isinstance(comp.module_selector, gr.Radio)
-            # Verify no dropdown is used for module selection
-            assert not isinstance(comp.module_selector, gr.Dropdown)
-            # Verify exactly 3 simple options
-            assert len(comp.module_selector.choices) == 3
-            actual_choices = [c[1] if isinstance(c, tuple) else c for c in comp.module_selector.choices]
-            assert actual_choices == [MODULE_MINIMAX, MODULE_UPSCALER, MODULE_STRATA]
+            assert comp.links_html is not None
+
+            html = comp.links_html.value
+            # exactly 3 anchor links to the routed pages
+            assert html.count('<a class="dashboard-link') == 3
+            for href in ('href="/minimax"', 'href="/upscaler"', 'href="/strata"'):
+                assert href in html
+            # the page rendering the sidebar highlights its own link
+            assert 'dashboard-link active" href="/minimax"' in html
+            assert 'dashboard-link active" href="/upscaler"' not in html
 
 

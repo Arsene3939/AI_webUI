@@ -23,7 +23,7 @@ from config import (
     MAX_STARTUP_GPU_UTIL,
     MIN_STARTUP_VRAM_GB,
 )
-from logger import get_logger
+from utils.logger import get_logger
 
 logger = get_logger("ComfyClient")
 

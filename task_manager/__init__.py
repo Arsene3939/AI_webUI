@@ -21,7 +21,7 @@ import os
 import requests  # noqa: F401  (tests patch task_manager.requests.get through this name)
 
 from config import COMFY_SERVER_URL, OUTPUT_DIR
-from comfy_client import (
+from core.comfy_client import (
     queue_prompt,
     download_output_file,
     check_server,

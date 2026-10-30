@@ -14,7 +14,7 @@ if PROJECT_ROOT not in sys.path:
 
 import config
 import task_manager
-import frame_extractor
+from utils import frame_extractor
 
 
 @pytest.fixture(autouse=True)

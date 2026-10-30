@@ -2,7 +2,7 @@
 Unit tests for workflow_builder.py graph generation for I2V, T2V, and R2V.
 """
 import pytest
-from workflow_builder import (
+from core.workflow_builder import (
     build_i2v_workflow,
     build_t2v_workflow,
     build_r2v_workflow,

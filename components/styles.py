@@ -260,19 +260,21 @@ div:has(> .sidebar.open) {
     font-weight: 700 !important;
 }
 
+/* 側欄改頁面連結後（/minimax /upscaler /strata 各自獨立頁面），
+   直接樣式化 <a.dashboard-link>；外觀與舊 radio 選項完全一致。 */
 .dashboard-simple-radio {
     background: transparent !important;
     border: none !important;
     padding: 0 !important;
 }
 
-.dashboard-simple-radio .wrap {
+.dashboard-nav-links {
     display: flex !important;
     flex-direction: column !important;
     gap: 8px !important;
 }
 
-.dashboard-simple-radio label {
+a.dashboard-link {
     display: flex !important;
     align-items: center !important;
     padding: 12px 14px !important;
@@ -282,28 +284,24 @@ div:has(> .sidebar.open) {
     color: #e2e8f0 !important;
     font-size: 0.95rem !important;
     font-weight: 500 !important;
+    text-decoration: none !important;
     cursor: pointer !important;
     transition: all 0.15s ease-in-out !important;
     margin: 0 !important;
 }
 
-.dashboard-simple-radio label:hover {
+a.dashboard-link:hover {
     border-color: #38bdf8 !important;
     background: #253349 !important;
     color: #38bdf8 !important;
 }
 
-.dashboard-simple-radio label.selected,
-.dashboard-simple-radio label:has(input:checked) {
+a.dashboard-link.active {
     border-color: #38bdf8 !important;
     background: #0284c7 !important;
     color: #ffffff !important;
     font-weight: 600 !important;
     box-shadow: 0 2px 8px rgba(2, 132, 199, 0.35) !important;
-}
-
-.dashboard-simple-radio input[type="radio"] {
-    display: none !important;
 }
 
 /* ==================================================================
@@ -404,3 +402,4 @@ window.triggerEditId = function() {
 };
 </script>
 """
+

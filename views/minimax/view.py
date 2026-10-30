@@ -23,7 +23,7 @@ from config import (
     normalize_scheduler,
 )
 from task_manager import task_manager
-from logger import get_logger
+from utils.logger import get_logger
 
 logger = get_logger("MiniMaxView")
 

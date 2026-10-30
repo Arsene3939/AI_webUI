@@ -9,8 +9,8 @@ import pytest
 import gradio as gr
 from PIL import Image
 
-import frame_extractor
-from frame_extractor import extract_last_frame
+from utils import frame_extractor
+from utils.frame_extractor import extract_last_frame
 from components.media_player import VideoPlayerCardComponent
 
 pytestmark = pytest.mark.skipif(

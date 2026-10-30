@@ -22,12 +22,12 @@ from config import (
     SERVER_STATUS_UPDATING,
     get_server_status,
 )
-from workflow_builder import build_r2v_workflow
-from comfy_client import upload_media_file
+from core.workflow_builder import build_r2v_workflow
+from core.comfy_client import upload_media_file
 from task_manager import task_manager
 from components.video_params import VideoParamsComponent
 from components.media_player import VideoPlayerCardComponent, ActionButtonsComponent, build_progress_html
-from logger import get_logger
+from utils.logger import get_logger
 
 logger = get_logger("R2VTab")
 

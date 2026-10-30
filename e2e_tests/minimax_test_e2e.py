@@ -2,7 +2,8 @@
 MiniMax-H3 WebUI End-to-End (E2E) Generation Test Suite.
 Validates the complete real-world user lifecycle:
   1. ComfyUI backend startup & connection (/system_stats, check_server)
-  2. Frontend WebUI server startup (launch_webui, HTTP 200 health probe on / and /config)
+  2. Frontend WebUI server startup (launch_webui, HTTP 200 probes: / redirector,
+     /minimax/config, deep link /minimax/i2v — routing refactor 2026-10-31)
   3. Simulating user opening the webpage (demo.load with legacy session data containing
      "1 (0.5 MP - 極速)", verifying zero Dropdown.preprocess choice errors & component normalization)
   4. Simulating user submitting a video generation request via the live WebUI API (handle_i2v_generate / handle_t2v_generate)
@@ -181,6 +182,7 @@ class E2ETestRunner:
         self.backend_url = None
         self.webui_port = None
         self.webui_url = None
+        self.webui_server = None
         self.client = None
         self.temp_dir = tempfile.mkdtemp(prefix="minimax_e2e_")
         self.results = []
@@ -214,7 +216,7 @@ class E2ETestRunner:
         t0 = time.time()
         try:
             import config
-            import comfy_client
+            from core import comfy_client
 
             if self.use_live_server:
                 self.backend_url = config.COMFY_SERVER_URL
@@ -255,19 +257,26 @@ class E2ETestRunner:
 
             # Ensure isolated test server environment allows generation during test runs
             os.environ["TEST_OVERRIDE_STATUS"] = "OK"
-            app.launch_webui(port=self.webui_port, raise_on_error=True, prevent_thread_lock=True, quiet=True)
+            # Routing refactor: launch_webui now returns the uvicorn Server handle
+            self.webui_server = app.launch_webui(port=self.webui_port, raise_on_error=True, prevent_thread_lock=True, quiet=True)
 
-            # Probe HTTP Root (/)
+            # Probe HTTP Root (/ -> last-page redirector HTML)
             resp_root = requests.get(f"{self.webui_url}/", timeout=6)
             assert resp_root.status_code == 200, f"WebUI root returned HTTP {resp_root.status_code}"
+            assert "webui_last_page" in resp_root.text, "WebUI root is not the last-page redirector"
 
-            # Probe HTTP Config (/config)
-            resp_config = requests.get(f"{self.webui_url}/config", timeout=6)
-            assert resp_config.status_code == 200, f"WebUI /config returned HTTP {resp_config.status_code}"
-            assert "components" in resp_config.json(), "Missing components in WebUI /config payload"
+            # Probe HTTP Config (/minimax/config — routed mount, was /config)
+            resp_config = requests.get(f"{self.webui_url}/minimax/config", timeout=6)
+            assert resp_config.status_code == 200, f"WebUI /minimax/config returned HTTP {resp_config.status_code}"
+            assert "components" in resp_config.json(), "Missing components in WebUI /minimax/config payload"
 
-            # Connect Gradio client to the live WebUI server
-            self.client = gradio_client.Client(self.webui_url)
+            # Tab pseudo-route deep link must serve the minimax page index (spec A-3)
+            resp_deep = requests.get(f"{self.webui_url}/minimax/i2v", timeout=6, headers={"Accept": "text/html"})
+            assert resp_deep.status_code == 200, f"Deep link /minimax/i2v returned HTTP {resp_deep.status_code}"
+            assert "webui_last_page" in resp_deep.text, "Deep link /minimax/i2v did not serve the minimax index"
+
+            # Connect Gradio client to the live WebUI server (minimax mount)
+            self.client = gradio_client.Client(f"{self.webui_url}/minimax")
 
             self.log_step("Step 2: Frontend WebUI Server Launch & Health Probe", True,
                           f"Bound to port {self.webui_port}, HTTP 200 OK & Gradio API connected", time.time() - t0)
@@ -506,8 +515,16 @@ class E2ETestRunner:
         task records, generated fake videos, archived input files, and the temp dir
         (Spec 2026-10-31 task 4: e2e runs must leave zero residue in outputs/)."""
         try:
-            import app
-            app.demo.close()
+            if self.webui_server is not None:
+                from core.port_guardian import PortGuardian
+                self.webui_server.should_exit = True
+                # give the uvicorn serve loop time to close its listening socket
+                deadline = time.time() + 5
+                while time.time() < deadline:
+                    if not PortGuardian.is_port_in_use(self.webui_port):
+                        break
+                    time.sleep(0.2)
+                self.webui_server = None
         except Exception:
             pass
 

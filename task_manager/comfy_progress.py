@@ -20,7 +20,7 @@ import requests
 import websockets
 
 import task_manager as _pkg
-from logger import get_logger
+from utils.logger import get_logger
 
 from .models import Task
 

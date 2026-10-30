@@ -492,7 +492,7 @@ class TestModuleScopedInterrupt:
         assert t_mm.task_id in interrupted_all
         assert t_mm.status == "interrupted"
 
-    @patch("comfy_client.interrupt_execution")
+    @patch("core.comfy_client.interrupt_execution")
     def test_interrupt_task_uses_targeted_cancel_only(self, mock_interrupt):
         """No general /interrupt: other modules' running ComfyUI jobs must not be killed."""
         tm = TaskManager()

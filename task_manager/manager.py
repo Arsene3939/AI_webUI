@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 import task_manager as _pkg  # late-bound constants & patch surface (HISTORY_FILE etc.)
 from config import COMFY_SERVER_URL
-from logger import get_logger
+from utils.logger import get_logger
 
 from . import comfy_progress, history_store, media_archive, server_sync
 from .models import Task, _is_same_device
@@ -211,7 +211,7 @@ class TaskManager:
         Immediately notifies ComfyUI to abort the running execution and remove pending prompts.
         Returns a list of interrupted task_ids.
         """
-        from comfy_client import interrupt_execution
+        from core.comfy_client import interrupt_execution
         interrupted_ids = []
         prompts_to_cancel = []
         with self._lock:
@@ -245,7 +245,7 @@ class TaskManager:
 
     def interrupt_task(self, task_id: str, server_url: Optional[str] = None) -> bool:
         """Interrupts a specific task by task_id."""
-        from comfy_client import interrupt_execution
+        from core.comfy_client import interrupt_execution
         prompt_id = None
         with self._lock:
             t = self._tasks.get(task_id)
