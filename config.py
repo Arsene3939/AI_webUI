@@ -504,3 +504,50 @@ def get_upscale_models(models_dir: Optional[str] = None) -> List[str]:
             "RealESRGAN_x4plus.safetensors",
         ]
     return sorted(models)
+
+
+# ============================================================================
+# 影片導演 (AI Film Director) — standalone Qwen3-VL vision models discovery.
+# NOTE: the H3 workflow encoder (qwen3vl_32b_minimax_h3_nvfp4_awq) is a
+# layer-truncated conditioning checkpoint (50/64 layers, NO lm_head) and
+# CANNOT generate text — it is deliberately excluded from the director list.
+# ============================================================================
+DIRECTOR_MODELS_DIR = os.environ.get("DIRECTOR_MODELS_DIR", r"F:\Comfy_models\text_encoders")
+# core CLIPLoader recipe that loads standalone Qwen3-VL files (see comfy 0.30 CLIPLoader)
+# 2026-10-31 對照官方 ComfyUI 範本工作流（user/default/workflows/llm_qwen3vl_text_gen.json）
+# 核對：官方對同一批 standalone qwen3vl 檔用的 type 是 ideogram4（非 joyimage）。
+DIRECTOR_CLIP_TYPE = os.environ.get("DIRECTOR_CLIP_TYPE", "ideogram4")
+# 導演模型放置裝置："default"＝交給 ComfyUI 显存管理；"cpu"＝完全不吃显存
+# （12GB 卡且显存已被其他程式佔滿時的保底選項，速度慢但可用）
+DIRECTOR_CLIP_DEVICE = os.environ.get("DIRECTOR_CLIP_DEVICE", "default")
+DEFAULT_DIRECTOR_MODEL = os.environ.get("DIRECTOR_MODEL", "qwen3vl_8b_nvfp4.safetensors")
+DIRECTOR_TIMEOUT_SECONDS = int(os.environ.get("DIRECTOR_TIMEOUT_SECONDS", "300"))
+DIRECTOR_EXCLUDE_KEYWORDS = ("minimax",)
+
+
+def get_director_models(models_dir: Optional[str] = None) -> List[str]:
+    """
+    Lists standalone Qwen3-VL checkpoints that can act as the director
+    (full LM with generation head). Files are discovered in the ComfyUI
+    text_encoders folder; H3's truncated conditioning copy is filtered out.
+    """
+    path = models_dir or DIRECTOR_MODELS_DIR
+    models: List[str] = []
+    if os.path.isdir(path):
+        try:
+            for f in os.listdir(path):
+                low = f.lower()
+                if not low.startswith("qwen3vl") or not low.endswith(".safetensors"):
+                    continue
+                if any(k in low for k in DIRECTOR_EXCLUDE_KEYWORDS):
+                    continue
+                models.append(f)
+        except Exception:
+            pass
+    models.sort()
+    # default model first when present; it may not be downloaded yet (then the
+    # UI shows a friendly "導演未就緒" state instead of a broken dropdown)
+    if DEFAULT_DIRECTOR_MODEL in models:
+        models.remove(DEFAULT_DIRECTOR_MODEL)
+        models.insert(0, DEFAULT_DIRECTOR_MODEL)
+    return models

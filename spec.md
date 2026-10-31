@@ -20,184 +20,136 @@
 ---
 
 # 接下來要執行的任務與詳細規劃：
-> **✅ 2026-10-31 (第三輪) 完成紀錄**：任務 1、2 為評估（結論已寫進各節），任務 3 已實作。
-> - **任務 1 結論**：taskmanager 現階段**不建議大拆**（953 行仍屬單一領域可讀範圍、外部 8+ 個 import
->   端依賴單例、拆分只有可讀性效益無新功能）；下次動到監控執行緒時再依
->   `task_models → history_store → comfy_progress` 的順序由低風險縫隙抽出，TaskManager 維持 facade。
-> - **任務 2 結論**：以路徑分頁**可行**且是「刷新留在原頁」的正解（gradio 6.30 查證：`gr.Tab` 已無
->   `url_path`、`Blocks` 無 path 參數，故須走 `gr.mount_gradio_app`＋FastAPI/uvicorn 的多 Blocks 掛載；
->   同程序內 task_manager 單例與 LocalStorage device ID 天然共用）。屬中等規模啟動重構，建議獨立排期；
->   只想先解決刷新痛点可用 location.hash 同步分頁的過渡 JS（約 20 行）替代。
-> - **任務 3（奇怪文字方塊）**：根因＝`backend-status-box` class 自帶背景/框線/min-height 48px 一層
->   ＋gradio `.block` 包装被主題描邊一層 ⇒ 空訊息時兩層空白方塊。修法＝CSS 把該 class 改為無任何
->   方塊描繪的自然文字行（透明底、無框、min-height 1.6em 防跳動、0.9rem 淺色字），
->   `.block:has(> .backend-status-box)` 同時脫掉包装層描繪；順手移除完全無人使用的死 CSS
->   `res-display-box`。三個 admin tab 的操作訊息同步適用。元件檔零修改。
-> - 驗證：unit tests **156 項全數通過**（新增 3 項防回歸：feedback 行不得再有方塊描繪、
->   `.block:has` 脫殼規則必須存在、死 class 不得復活）。
-> - `SERVER_STATUS` 已於施工前切 UPDATING、完工後恢復 OK。
 
-## 0. 重複提醒：注意事項
-- 應避免UI介面出現過多開發相關字詞，讓使用者只看到他需要看到的東西
-- 很多東西其實使用者根本不在乎，例如：支援電腦與手機... 
-- 開始施工前要改SERVER_STATUS旗標
+## 1. 新增"影片導演"
+用一個具有視覺能力的多模態模型(VLM)，作為影片導演，根據輸入圖片與我們口語簡單的需求，轉成專業且描述詳細的提示詞給minimax h3生成
+- 這個VLM必須跟minimax h3一样是無審查的模型，而且要同樣能跑在comfy後端
+- 規劃1. 可用的模型選擇
+- 規劃2. UI設計
+- 其他規劃
 
-## 1. 評估以網頁路徑(/)分開管理頁面的可行性
-- 這樣做是不是可以實現使用者重新整理網頁時，會留在原本頁面的機制
-### 現況分析
-- 目前是**單一 Blocks**：各 view（MiniMaxView/UpscalerView/strata）在 `views/` 已類別化，但它們全部
-  渲染在同一 Blocks 內，分頁靠 gradio 的 `gr.Tabs`，**URL 始終是 `/`** ⇒ 重新整理一律回到預設分頁。
-- gradio 6.30 查證：`gr.Tab` **沒有** `url_path` 參數（5.x 曾有、6.30 已不存在）、`gr.Blocks` 也沒有
-  path 參數 ⇒ 內建深連結不可用；`gr.mount_gradio_app` 可用（把多個 Blocks 掛在同一 port 的不同路徑）。
-### 兩條路線比較
-| | A. 多 Blocks 掛載（真實路徑 /, /upscaler, /strata） | B. 單 Blocks＋JS 把分頁選取同步到 location.hash |
-|---|---|---|
-| 刷新留在原頁 | ✅ 瀏覽器原生行為 | ✅ 用 JS 還原點擊（hack） |
-| 可深連結/前進後退 | ✅ | ❌（hash 可但脆弱） |
-| 實作成本 | 中：`launch()` 改 FastAPI+uvicorn+`mount_gradio_app`；css/theme/head/queue/allowed_paths 要逐 app 套用（現在只在 launch 一次性給）；header/sidebar/SessionContext 每頁重建 | 低～中：一段 head JS 監聽 `.tab` 按鈕並寫 hash；依賴 gradio 內部 DOM，升級易斷 |
-| 狀態共用 | 同一 process ⇒ `task_manager` 單例、LocalStorage device ID 天然共用；但跨頁切换是整頁 reloader，未提交的表單輸入會丟（有「恢復上次輸入」兜底） | 同一頁內切換，狀態不丟 |
-| 對 e2e/測試衝擊 | 大（兩個 e2e runner 要改多頁導航） | 小 |
-### 結論（建議）
-- **可行**，而且 A 是正解（真正實現「刷新留在原頁」＋可收藏/分享各模組 URL），但屬於中等規模的啟動重構，
-  建議列為獨立工程再排期；views/ 的類別化結構已經替 A 鋪好路。
-- 如果只想先解決「重新整理跑回首頁分頁」這個小痛点，可先做 B（約 20 行 JS）過渡，日後升級到 A。
-### 方案 A 詳細規劃（✅ 已實作，2026-10-31 第四輪，見文末完成紀錄）
-#### A-1. 階層規劃（URL 與檔案結構）〔2026-10-31 依使用者構想修訂〕
+> **狀態：程式端＋模型安裝全部完成（2026-10-31）；接線格式已對官方範本工作流逐一核對實測通過，
+> 實際推論完成度取決於執行當下显存/RAM 是否被常駐程式（strata=本地 LLM）挤占，
+> 乾淨環境下用 `tools/director_selftest.py` 一條指令即可最終驗收。**
+>
+> **施工紀錄（2026-11-01）**
+> - **方案 A（重用 H3 自帶 qwen3vl_32b_minimax_h3）已證實不可行**：ComfyUI `comfy/text_encoders/llama.py`
+>   `Qwen3VL_32BConfig` 註解與欄位證實該 checkpoint 是「64 層截到 50 層、`lm_head=False`、`final_norm=False`」
+>   的 conditioning 檔案（只出 embedding、無生成頭）→ 物理上無法生成文字。已从導演模型掃描名單中永久排除。
+> - **已上線的程式端實作**（全部走 core 節點、無 custom node）：
+>   `config.get_director_models()`（掃 text_encoders 的 qwen3vl* 並排除 minimax 截斷版）、
+>   `core/director_builder.py`（CLIPLoader+LoadImage+TextGenerate 三節點 graph、中英導演人格、輸出雙段格式
+>   【導演筆記】/【English Prompt】與容錯解析）、`core/director_client.py`（上傳/送件/輪詢 history 取文字、
+>   結果快取、各種失敗皆回友善中文不拋錯）、`components/director_block.py`（摺疊導演區塊，模型/語言收在
+>   進階設定）、已接入 **I2V tab**（吃本 tab 首幀、成品一鍵套用提示詞）。
+>   測試：`tests/test_director.py` 18 項；全量 **189 綠**；minimax/upscaler e2e 全綠。
+> - **模型選用（2026-10-31，依使用者硬體 RTX 5070 12GB + 96GB RAM 拍板）**：
+>   - **主選 `qwen3vl_8b_nvfp4.safetensors`（6.3GB）**——RTX 50 系 Blackwell 有**原生 FP4 張量核心**，
+>     NVFP4 格式在 5070 上是「體積最小＋解碼最快」的 8B 版本；權重 ~5.9GB + vision + KV ≈ 7-8GB peak，
+>     12GB 在空機（关掉其他佔显存的程式）時可全速跑。
+>   - **備援 `qwen3vl_4b_fp8_scaled.safetensors`（4.9GB）**——給显存吃緊/要和其他程式共存時的下檔選項，
+>     兩檔都會進進階設定的模型下拉選單。
+>   - 下載來源：ModelScope `Comfy-Org/Qwen3-VL`（HF 直連不通時的鏡像，已驗證 200 可連）。
+>   - **不需要安裝任何 custom node**：導演走的 `CLIPLoader + LoadImage + TextGenerate` 三個節點
+>     全部內建於 ComfyUI-Desktop 0.30.1 core（已在執行中的後端 `/object_info` 實測確認：
+>     `joyimage` 在 CLIPLoader type 清單內、TextGenerate schema 與 builder 欄位逐一對上）。
+>   - **模型清單免重啟**：`DirectorBlockComponent` 內建 5 秒定時重掃目錄，只有清單真的變化時
+>     才刷新下拉選單/成品框可見度/狀態行（`refresh_model_choices`，含 5 項回歸測試）。
+>   - **显存放置可調**：`config.DIRECTOR_CLIP_DEVICE`（env 可覆寫；"default"=交給 ComfyUI 显存管理、
+>     "cpu"=完全不佔显存的保底）。⚠ CPU 模式請搭配 **bf16** 版模型（fp8/fp16 的 CPU matmul 在
+>     Desktop 版 torch 會原生崩潰）：`qwen3vl_4b_bf16.safetensors`（8.9GB）已一併下載。
+>     本機注意：`strata` 常駐程式（＝本地 LLM 服務）會佔走大部分 12GB 显存與 ~60GB RAM，
+>     要跑導演/影片生成前需先關閉它；導演撞到 OOM 時 UI 會給出「显存不夠…關程式或改小模型」的可操作提示。
+>   - **下拉選單現況**：掃描結果依序為 `qwen3vl_8b_nvfp4`（主選，Blackwell 原生 FP4）→
+>     `qwen3vl_4b_bf16`（CPU 保底）→ `qwen3vl_4b_fp8_scaled`（GPU 輕量）。
+> - **live spike 結果（2026-10-31，使用者提供官方範本工作流 `user/default/workflows/llm_qwen3vl_text_gen.json` 對照）**：
+>   - **(a) 載入＝通過**：`CLIPLoader type=ideogram4`（官方範本對 standalone qwen3vl 檔用的 type，
+>     `DIRECTOR_CLIP_TYPE` 已照官方預設改掉）實測 `Qwen3VLTEModel_ loaded completely; 4999.47 MB, full load: True`。
+>     先前 joyimage 也能載，但官方範本是 ideogram4 → 以官方為準。
+>   - **(b) 送件格式＝通過（關鍵收斂）**：`TextGenerate` 的 DynamicCombo 在 API graph 的正確序列化是
+>     「`"sampling_mode": "on"` ＋ 子欄位用點分鍵 `sampling_mode.top_k / .temperature / ...`」
+>     （官方範本的 input 名稱直接印證；option-dict 巢狀與平級展開都會被 0.30.1 驗證端打回或把參數丟掉）。
+>     結尾必須接 `PreviewAny`（TextGenerate 非輸出節點，graph 無輸出會被 `prompt_no_outputs` 拒絕；
+>     PreviewAny 把文字以 `{"text":[…]}` 寫進 /history，零檔案落盤）。以上已鏡像進 `director_builder` 並有測試封鎖。
+>   - **(c) 推論完成度＝受環境資源限制**：送件、載入、tokenize、開始生成全部抵達；
+>     `device=cpu` 時在 fp16 CPU matmul 原生崩潰（Desktop 版 torch 的 fp8→fp16 CPU 路徑不良）、
+>     `--lowvram` 下則 `bad allocation`（當時 strata 常駐已吃走 ~58GB RAM + 絕大部分 12GB VRAM）。
+>     **不是接線問題**：乾淨環境（关掉 strata 等佔显存程式）下 8B nvfp4 全速跑；
+>     strata 開著時可用 `--device cpu` 搭配 **`qwen3vl_4b_bf16.safetensors`（已下載）**
+>     ——bf16 純 CPU matmul 不會觸發 fp16 崩潰路徑（注意：此點仍待干净環境外的自我驗證收尾）。
+>   - **收尾工具**：`tools/director_selftest.py`（走與網頁按鈕完全相同的 `call_director` 路徑，
+>     `--model/--device/--image` 可選；綠 = 網頁導演也綠）。
+>   - **測試**：單元 195 綠（含 DynamicCombo 點分鍵、PreviewAny 結尾、模型掃描/自動刷新、OOM 友善訊息）；
+>     minimax／upscaler e2e 全綠零殘留。
+> - **審查性提醒**：Comfy-Org 的 Qwen3-VL 為原版 Instruct（有安全對齊），敏感需求可能被改寫；
+>   若要完全無審查導演，後續再走 ComfyUI-QwenVL custom node ＋ abliterated Qwen2.5-VL（方案 B+）。
+> - **下輪候選**：R2V/T2V tab 接入導演區塊、e2e 加導演步驟（mock 後端回固定文字）、live spike 收斂參數。
+
+### 規劃 1. 可用的模型選擇
+
+**硬性條件**：本地端、無審查（或可移除審查）、能在 ComfyUI 後端執行（與 MiniMax-H3 共用同一個 ComfyUI-Desktop 实例）。
+
+**方案 A（首選，零下載）：直接重用 H3 自帶的導演編碼器**
+本機已裝 `F:\Comfy_models\text_encoders\qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`＝
+MiniMax 微調過的 **Qwen3-VL-32B VLM（含 vision tower）**，語意對齊 H3、為「解圖＋解需求→專業提示詞」而訓練。
+已核對本機 ComfyUI-Desktop **0.30.1**：core 內建 `TextGenerate` 節點（`comfy_extras/nodes_textgen.py`），
+吃既有 text-encoder 物件、**具 image/video 可選輸入**（官方 LTX-2「圖→i2v 提示詞助理」模板即同款用法），
+`comfy/text_encoders/qwen3vl.py` loader 在 core、nvfp4-awq 混量檔案已由 H3 生成實戰載入成功。
+→ 導演 workflow＝與 H3 同一個 encoder 載入＋TextGenerate(圖片+口語需求)→ 回文字。**零新權重、零新節點。**
+待 spike 驗證三點：(a) 微調後是否仍聽得懂口語對話指令（失敗降方案 B）、(b) checkpoint vision 部分是否
+完整接上 TextGenerate 的 image 輸入、(c) ~20GB VRAM 常駐與 H3 生成共用（同檔快取可共用，用完 /free 釋放）。
+
+| 候選模型（方案 B 備援下載版） | 無審查方式 | 體積/VRAM 需求 | ComfyUI 節點（現成活躍） | 評序 |
+|---|---|---|---|---|
+| **Qwen2.5-VL 7B/3B-Instruct-abliterated**（huihui-ai，HF＋ModelScope 雙源） | abliterated（移除拒答）；另有 prithivMLmods `Qwen2.5-VL-Abliterated-Caption` 特化描述版 | 7B≈16GB(fp16)/≈8GB(int4)；3B≈8GB | `1038lab/ComfyUI-QwenVL`、`alexcong/ComfyUI_QwenVL`（模型路徑可換成 abliterated 權重 repo） | ⭐ 首選：畫面的細節描述力最強，abliterated 生態最完整 |
+| **MiniCPM-V 2.6 / MiniCPM-o**（OpenBMB） | 本身低拒答、開放（授權細節開工前核對） | 8B≈16GB | `1038lab/ComfyUI-MiniCPM`、`CY-CHENYUE/ComfyUI-MiniCPM-o` | 亞軍：中文理解佳，節點附 VQA/描述節點 |
+| **Moondream 2 / 3.1**（kijai 節點＋Moondream3.1Caption 節點） | 訓練時未加安全對齊，天性無審查 | ≈2–3GB（極輕） | `kijai/ComfyUI-moondream`、`Comfy_VLM_nodes` | 備援：VRAM 不足時的保底；描述力較弱、不擅长「導演級」提示詞 |
+
+- 三個候選的節點都是「載入模型 → 圖片+文字輸入 → 輸出純文字」的標準三節點形態，WebUI 端可以用同一套 graph 建構器參數化（見其他規劃）。
+- ❓ **需拍板：GPU VRAM 多大？** ≥16GB → 首選 7B；8–12GB → 3B；<8GB → Moondream。
+- 模型權重存放：`F:\Comfy_models\LLM-Vision\<模型名>\`（與既有 `F:\Comfy_models\upscale_models` 掃描模式一致，導演模型下拉選單也掃目錄）。
+- 全部僅本機執行、不外傳；abliterated 衍生模型授權隨基礎模型（Qwen 系可本機自用），開工前完成授權核對。
+
+### 規劃 2. UI 設計
+
+**定位決策**：導演的產出就是要餵給 minimax 的提示詞欄 → 做成 **minimax 頁內嵌的「導演區塊」**（嵌入 I2V/R2V/T2V 三個 tab 的提示詞區旁），不做成 `/director` 獨立頁。理由：免跨頁搬文字、免多一層導航，符合「使用者只看到需要的東西」。❓ 若你偏好獨立 /director 頁再加 localStorage 搬文字，請說。
+
 ```
-URL：
-  /                    → 導向頁：讀 LocalStorage last_page 自動跳轉上次使用的模組頁；
-                         首次造訪導向 /minimax（各模組頁載入時寫 last_page）
-  /minimax             → MiniMax 頁（頁內 tabs：T2V/I2V/R2V/歷史/管理）
-  /upscaler            → 畫質增強 Upscaler 頁
-  /strata              → Strata 頁
-  /minimax/i2v 等      → tab 級「假路由」URL：只掛 3 個 app，
-                         FastAPI catch-all 讓 /minimax/* 都回 minimax 的 index，
-                         頁內 JS tab-router 讀 pathname 點選對應 gr.Tab，
-                         點 tab 時 history.pushState 寫回 pathname。
-                         ⇒ 深連結/刷新留存/的外觀全部成立，但不產生 12 個 mount。
-
-檔案：
-  webapp/
-    __init__.py
-    shell.py          # 共用外殼：header/sidebar/SessionContext/CSS·theme·head 套用（每頁一次）
-                      # ＋ last_page 寫入 JS
-    tab_router.js     # tab↔pathname 雙向同步（含 gradio tab DOM 選擇器，升級需重驗）
-    pages_minimax.py  # 組 MiniMax Blocks（內部使用既有 MiniMaxView）
-    pages_upscaler.py # 組 Upscaler Blocks（既有 UpscalerView）
-    pages_strata.py   # 組 Strata Blocks（既有 StrataView）
-    server.py         # FastAPI 组装：mount_gradio_app ×3 ＋ / 導向 app ＋ /<module>/* catch-all + uvicorn
-  app.py              # 瘦身为入口：保留 launch_webui() 外殼（PortGuardian/reconcile/維護 banner）
+┌ 🎬 影片導演（點擊展開）────────────────────────┐
+│ 導演需求：[口語描述你想拍什麼….        ]       │
+│ 參考圖片： 自動沿用本頁首幀/參考圖 [+再加一張] │
+│ [ ✨ 請導演寫提示詞 ]   ← 按鈕                 │
+│ （狀態行）導演構思中… / ✅ 已完成              │
+│ 導演成品： [可編輯的多行結果 ]                 │
+│ [ 套用到生成提示詞 ]                           │
+│   ▸ 進階設定（預設收合）                       │
+│      └ 導演模型：[內建（H3 專用導演） ▾]       │
+│        輸出語言：[中文說明＋英文提示詞 ▾]      │
+└────────────────────────────────────────────────┘
 ```
-- `views/` 現有的 MiniMaxView/UpscalerView/StrataView **不動**：它們已經把元件建好，
-  只是目前全塞在同一 Blocks；改為各頁各自 `with gr.Blocks(...)` 內 render 一次。
-- `task_manager`、`AdminManager`、`config` 都是同程序單例，三個頁面天然共用，無需改動。
-- ⚠️ 設計紅線：**tab 不等於 mount**。把每個 tab 掛成獨立 Blocks（共 12＋個 app）會讓
-  SessionContext/timer/CSS/queue websocket 全部翻倍、tab 切換變整頁 reload（丟未提交表單）、
-  e2e 矩陣失控——URL 外觀用假路由達成，app 邊界維持 3 個。
-- ⚠️ `/minimax/admin` 只是可見性捷徑，不是權限界線；admin 動作的真正防呆仍是後端
-  `is_super_user`（IP/session）檢查，不得因有 URL 而鬆動。
+- **導演模型選擇預設隱藏**：一般使用者不需要選模型（預設＝內建 H3 導演編碼器，零設定直接用）；
+  模型下拉與輸出語言收進區塊內的「進階設定」摺疊列，只給想折騰的人。
+- **用詞紅線**（遵守注意事項）：UI 不出現 VLM、custom node、graph、prompt engineering 等開發字；統一用「導演」「導演構思中」「導演成品」。技術名只出現在 admin 專區設定裡。
+- 流程：點按鈕 → WebUI 組 VLM workflow → 走既有 `queue_prompt` 送到 ComfyUI → 從 `/history` 取回文字 → 填入可編輯框 → 「套用」寫進生成提示詞欄（可再手動改）。
+- T2V tab 沒有自帶圖片 → 導演區塊提供「上傳一張參考圖」；沒圖時按鈕變「請導演構思」（純文字導演，同款模型但不吃圖）。
+- 導演呼叫**不进任務歷史**（不污染影片 history），但在 log 留一筆供除錯。
+- 失敗應對（使用者語氣）：節點沒裝 →「導演功能未就緒：請先安裝導演元件」；VRAM 不足 →「導演暫時無法上線，請稍後重試」；逾時 → 同上。按鈕變不可點而非彈錯。
 
-#### A-2. 改動範圍
-| 項目 | 改動 | 風險 |
-|---|---|---|
-| 啟動棧 | `demo.launch()` → FastAPI＋`gr.mount_gradio_app`×3＋`/` 導向 app＋uvicorn（保留 PortGuardian 檢查、`reconcile_orphaned_tasks`、啟動 banner） | 中：mount 後 queue/static/websocket 路徑由 gradio 自動處理，但 watch 模式（`-m gradio app.py`）與多頁掛載的相容性**必須先驗證**，不行就 dev 只掛單頁 |
-| tab 子路徑假路由 | FastAPI catch-all 讓 `/<module>/*` 回傳該模組 index＋頁內 JS tab-router（pathname⇄gr.Tab 雙向同步、pushState）；`/` 讀 LocalStorage `last_page` 跳轉 | 中：JS 依賴 gradio 內部 tab DOM，gradio 升級需重驗（有 e2e 最深連結測試守住）；`/minimax/admin` URL 僅為捷徑，權限仍由 is_super_user 把關 |
-| theme/css/head | 由 launch 參數改為**每頁 Blocks 建立時**套用（shell.py 統一給）；熱重載修復的 reload 分支同步改到 shell | 低（已有防回歸測試护航） |
-| 跨頁切換 | header/sidebar 加 `<a href="/upscaler">` 連結取代跨模組 tab；頁內 tabs 不動 | 低；注意整頁 reload 會丟未提交表單（「恢復上次輸入」兜底） |
-| device ID / LocalStorage | 同 origin，DEVICE_STORAGE_SECRET 機制照舊共用，不動 | 低 |
-| 輪詢負荷 | check_server 0.5s timer、進度輪詢：每個「開著的分頁」各跑一套＝與現況相同（多頁切換後舊分頁 timer 隨整頁卸載自然消失，負擔反而比單一頁更多 tab 時更小） | 低 |
-| 維護模式 banner | SERVER_STATUS UPDATING 顯示邏輯每頁 header 各自渲染（現有 build_header_html 重用） | 低 |
-| allowed_paths/queue | 逐 app 設定（同一份設定抽到 shell 常數） | 低 |
-| 單元測試 | `test_app_state` 的 launch_webui port 診斷、`test_reload_style_guard` 改接新 server factory；其餘不動 | 中 |
-| e2e | 兩個 runner 增加「進到對應頁」導航步驟；admin 步驟隨各頁管理 tab | 中：這是最大塊的既有投資保護 |
-#### A-3. 任務規劃（執行順序）〔配合修訂版 IA〕
-1. **可行性验证 spike（半天）**：最小實驗——FastAPI＋`mount_gradio_app` 掛 2 個 Blocks，
-   驗證 6.30 的 queue/websocket/static 路徑、watch 模式相容性、`gr.Timer` 於離頁時是否停止輪詢、
-   **catch-all 回傳 index＋pushState 改 pathname 後 gradio 功能（上傳/queue）不受影響**。
-   ⚠️ 驗證不過就退回「3 mounts 無 tab 子路徑」或純 B 方案，不硬做。
-2. `webapp/shell.py`：抽出共用外殼（Blocks 建立參數、header、sidebar、SessionContext、樣式套用、
-   `last_page` LocalStorage 寫入）。
-3. `pages_*.py`×3：各頁組裝（把現在 app.py 內 view 執行序搬到對應頁）。
-4. `server.py`＋app.py `launch_webui()` 改造（含 PortGuardian、reconcile、維護 banner、watch 模式行為、
-   `/<module>/*` catch-all、`/` 導向 app）。
-5. `tab_router.js`：pathname⇄gr.Tab 雙向同步（先只給 minimax 的五個 tab 啟用，跑通再套 upscaler/strata）。
-6. header/sidebar 加跨頁連結；移除跨模組 tab（頁內 tabs 保留）。
-7. 單元測試適配（launch_webui/reload-style 接新 server factory）＋全量回歸（目標：156+ 項綠）。
-8. e2e 兩支適配：模組級 URL 直達測試（/minimax、/upscaler、/strata、`/` 跳轉）＋
-   **僅一條**最深 tab 連結測試（如 /minimax/i2v）；矩陣控制不住就不加。全綠＋零殘留檢查。
-9. 完成紀錄寫入 spec、SERVER_STATUS 恢復 OK。
-- 粗估：spike 半天；完整實施 1.5～2.5 個工作日當量（tab 假路由多半天～一天）；
-  風險集中在啟動棧、假路由 JS、e2e 適配。
+### 其他規劃
 
----
-
-> **✅ 2026-10-31 (第四輪) 完成紀錄：方案 A 路由重構已實作，A-3 全部 9 步完成**
->
-> **新階層（與 A-1 一致）**
-> - `webapp/shell.py`：`APP_THEME`（自 app.py 搬來）、`TAB_SEGMENTS` 假路由表、
->   `TAB_ROUTER_JS`（pathname⇄tab 雙向同步＋`last_page` 寫入）、`WebPageScaffold` 共用外殼
->   （SessionContext／header／sidebar／toolbar／雙 timer）。
-> - `webapp/pages_minimax|pages_upscaler|pages_strata.py`：各頁一個 `gr.Blocks`（PAGE 單例），
->   minimax 頁帶回 55-output `restore_device_state`、進度輪詢、元件別名。
-> - `webapp/server.py`：`create_asgi_app()`（uvicorn factory）→ `/` 讀 `webui_last_page` 的 JS 導向頁、
->   `mount_gradio_app`×3（theme/css/head 掛在 mount 上）、HTTP 中介層只對**已知 tab 段**的
->   GET html 導寫回模組 index（紅線遵守：tab ≠ mount）。
-> - `app.py` 变薄身 façade：再匯出 `demo`/`all_restored_outputs`/`restore_device_state` 等
->   全部既有測試/e2e 依賴名稱；`launch_webui()` 改組裝 uvicorn（PortGuardian、reconcile、banner 保留；
->   `prevent_thread_lock=True` 回傳 uvicorn Server handle 供 e2e 關機）。
-> - `run.bat`：`-m gradio app.py` → `WEBUI_DEV_RELOAD=1` + `python app.py`（uvicorn reload 監整個專案 .py；
->   舊「reload 執行緒補 launch 套樣式」機制隨之退役，樣式現在由 mount 參數每請求生效）。
-> - sidebar：radio → 三个 `<a class="dashboard-link">` 頁面連結（自頁 high-light）。
->
-> **連帶修復（重構過程中挖出的既有地雷）**
-> - `config.set_comfy_server_url()` 的同步清單還掛著搬目錄前的模組名（`comfy_client`），
->   且漏掉 task_manager 拆分後的子模組 → e2e 上傳打到預設 8188。已改為**掃 sys.modules 屬性名**
->   （對未來搬檔免疫）。這是 task_manager 模組化＋根目錄整理兩輪疊出來的過期引用。
->
-> **測試**
-> - 刪 `tests/test_reload_style_guard.py`（被退役的機制）；新增 `tests/test_webapp_routing.py`
->   （掛載/config、index 帶 css+theme+head、全部 tab 深連結、未知段不誤導寫、`/` 導向頁、router JS
->   的 TAB_MAP 是合法 JSON）；`TestDashboardSidebar` 改驗三條連結＋active 高亮。
-> - 單元：**163 全綠**（52s）。
-> - minimax e2e：Step 2 探測改 `/`(導向頁)+`/minimax/config`+深連結 `/minimax/i2v`，Client base 改
->   `.../minimax`，關機改 `server.should_exit` → **8 步全綠**。
-> - upscaler e2e：同上（`/upscaler/config`、`/upscaler/admin`），跨模組步驟因 `/handle_i2v_generate`
->   現在只存在于 minimax 掛載，新增第二支 `minimax_client` → **9 步全綠**（含 Step 6.5）。
-> - dev 自動重載實測：改 `styles.py` → uvicorn 重載後新樣式標記 1 秒內出現在 `/minimax/` index、
->   theme/CSS 標記全部仍在 → 熱重載丟樣式的老問題在新架構下結構性消失。
->
-> **已知邊界（升級 gradio 時要重驗）**
-> - 深連結 JS 依賴 gradio 內部 DOM（`.tab-nav` 的 nth button）；路由測試只守伺服器端，
->   前端部分靠 e2e 深連結探測＋人工巡視。
-> - upscaler/strata 頁的手動裝置 ID 切換為輕量語意（只換 BrowserState+重繪 header，
->   不做 minimax 式表單回填）；task 狀態由各自輪詢 timer 接手。
-> - SERVER_STATUS 已恢復 OK。本輪未 commit（未獲指示）。
->
-> **修復記錄（2026-10-31 同日，使用者回報）**
-> 1. **開頁/重新整理彈空白錯誤框**：`InvalidComponentError: Tab Component not a valid
->    output component`。原因＝單輸出 load handler 回傳 `[gr.update(...)]`（list 包一層）；
->    gradio 只對**多輸出** fn 解包 list，單輸出時整個 list 被當成 Tab slot 的原始值 →
->    postprocess 分支直接 raise。舊單頁版沒事是因為回傳 3 個 updates 對 3 個 Tab 輸出（會解包）。
->    修正：三頁的 `update_admin_tab_visibility` 直接回傳 update dict。
->    防回歸：`test_webapp_routing.py` 新增「重放每頁所有 load 依賴走 process_api」測試
->    （含 55-output 還原依賴），單位測試 164 全綠、兩套 e2e 全綠。
-> 2. **log 噪音**：uvicorn 存取日誌（每個 0.5s 輪詢都印一行 HTTP response）已在
->    `launch_webui` 兩條路徑與 dev-reload 全部 `access_log=False` 關閉；
->    現在只留啟動、重載與錯誤訊息。
->
-> **修復記錄（2026-11-01，使用者回報：管理員篩選 bug＋下拉選單收合）**
-> 1. **Super User「選取歷史任務」篩選無效＋not-in-choices 錯誤**：篩選觸發直接掛
->    `get_admin_tasks_dropdown_choices`（回傳裸 choices 清單）。gradio 把單輸出的裸回傳
->    當成 dropdown 的 **value**，不是 choices → 選單永遠不更新、value 變成清單物件而炸
->    "is not in the list of choices"。新增 `AdminManager.apply_task_filter`：回傳
->    `(gr.update(choices=…, value=…), gr.update(裝置選單))`，value 永遠落在 choices 內
->    （保留現選、否則 snap 第一筆）；順帶修 `on_clean_failed_tasks` 的 `value=""` 同型地雷，
->    並讓**裝置篩選選單**每次套用篩選時重掃（新裝置不用再重新整理頁面才看得到）。
->    防回歸：`test_admin_tabs.TestAdminTaskFilter` 5 測＋實戰 server 走 gradio_client
->    打 `/apply_task_filter` 驗證（狀態篩選／裝置篩選精確匹配／value 合法性全 PASS）。
-> 2. **下拉選單再點一次不收合**：查證為 gradio 上游行為（GitHub gradio#3532 系列；
->    官方收合路徑只有點外面與 Esc，bundle 內 `keydown Escape -> open=false` 已核對）。
->    於 `CUSTOM_HEAD_JS` 加補丁：capture-click 偵測「選單開著且這一下落在觸發區」→
->    gradio handler 跑完後補發一發 Escape（仍開著才補，gradio 原生修好後自動失效）。
->    ⚠️ 需用浏览器實測確認手感；無頭環境無法驗證 DOM 互動。
->    連帶發現並清除了 spike 驗證殘留於真實 task_history 的測試任務（零殘留原則）。
+- **Phase 0 spike（必做，半天）**：在 ComfyUI UI 手動組一條「H3 同款 qwen3vl_32b_minimax_h3 載入 → TextGenerate(image=首幀, 口語需求)」workflow，
+  親測三件事：能否吃圖、是否聽懂口語指令並產出 H3 風格提示詞、拒答行為。通過→導演走方案 A（零下載）；
+  不通→退方案 B（裝 ComfyUI-QwenVL 節點＋abliterated Qwen2.5-VL 下載版），再不通降 Moondream。不硬做。
+- **檔案規劃**：
+  - `core/director_builder.py`：組 VLM workflow graph（鏡像既有 `core/workflow_builder.py` 的形態；模型/圖片/需求/語言 → graph）
+  - `core/director_client.py`：`call_director(image_paths, brief, model, language)` → queue_prompt、輪詢 /history、取文字、逾時處理（沿用 comfy_client 的重試語意）
+  - `config.py`：`get_vision_models()` 掃 `F:\Comfy_models\LLM-Vision`；導演節點可用性偵測
+  - `views/minimax/components/director_block.py`：上方 UI 區塊元件（三個 tab 共用，塞進 `ActionButtonsComponent` 生成钮附近）
+- **VRAM 共存策略**：導演跑完立即呼叫 ComfyUI `/free`（既有 free_vram 機制）釋放 VLM，避免與 H3 搶显顯存；若偵測 VRAM 不足以同時載入，就維持「用完即放」模式。
+- **快取**：以 (首幀圖 hash + 導演需求 + 模型) 做 key，同條件重點直接回上次結果，可强制重導。
+- **測試規劃**：
+  - 單元：graph 建構正確性、/history 文字解析、快取命中/失效、模型目錄掃描
+  - e2e：minimax runner 加一步——mock 後端對 VLM graph 回固定文字 → 驗證「導演成品→套用到提示詞→生成」串起走
+- **合規與安全**：全程本機、無外部 API；abliterated 模型僅供本機生成輔助；產出提示詞仍由使用者自己承擔內容責任。
+- **任務順序**：Phase0 spike → 模型安裝腳本/指引 → director_builder/client → UI 元件（先 I2V，跑通再推 R2V/T2V）→ 單元＋e2e → 完成紀錄寫 spec、SERVER_STATUS 恢復 OK。
+- 粗估：spike 半天；完整實施 1～2 個工作日當量（不含模型下載時間）。

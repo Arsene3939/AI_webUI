@@ -30,6 +30,7 @@ from core.comfy_client import upload_media_file
 from task_manager import task_manager
 from components.video_params import VideoParamsComponent
 from components.media_player import VideoPlayerCardComponent, ActionButtonsComponent, build_progress_html
+from components.director_block import DirectorBlockComponent
 from utils.logger import get_logger
 
 logger = get_logger("I2VTab")
@@ -181,6 +182,7 @@ class I2VTab:
         )
         self.action_btns = ActionButtonsComponent(generate_label="🚀 開始生成影片")
         self.player_card = VideoPlayerCardComponent(label="生成影片")
+        self.director = DirectorBlockComponent()
 
     def render(self) -> "I2VTab":
         with gr.Tab("🖼️ 圖生影片 (I2V)"):
@@ -197,6 +199,7 @@ class I2VTab:
                         lines=5,
                         value="",
                     )
+                    self.director.render()
                     self.params_card.render()
                     self.action_btns.render()
 
@@ -205,6 +208,8 @@ class I2VTab:
 
     def register_events(self, session_task_state: gr.BrowserState, device_id_state: gr.BrowserState, on_completed_cb=None):
         self.params_card.register_events(image_ref=self.first_frame)
+        # 影片導演：吃本 tab 的首幀當參考圖，成品套用到本 tab 的提示詞欄
+        self.director.register_events(self.first_frame, self.prompt)
         self.first_frame.change(
             on_first_frame_change,
             inputs=[self.first_frame, self.params_card.quality_level],

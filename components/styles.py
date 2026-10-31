@@ -319,6 +319,11 @@ a.dashboard-link.active {
     font-weight: 500 !important;
 }
 
+/* 影片導演狀態行（同樣採無方框純文字行風格） */
+.director-thinking { color: #38bdf8 !important; font-weight: 500; }
+.director-ok { color: #4ade80 !important; font-weight: 500; }
+.director-warn { color: #fbbf24 !important; font-weight: 500; }
+
 .backend-status-box p {
     color: #e2e8f0 !important;
 }
