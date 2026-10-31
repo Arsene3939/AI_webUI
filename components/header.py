@@ -11,7 +11,12 @@ from config import (
 )
 
 
-def build_header_html(device_id: Optional[str] = None) -> str:
+# 頁面主標（三個模組頁共用同一 header 元件，各自帶自己的產品名；
+# 預值是 minimax，維持舊呼叫端/測試的既有行為）
+DEFAULT_HEADER_TITLE = "🎬 MiniMax-H3 影片生成系統"
+
+
+def build_header_html(device_id: Optional[str] = None, title: Optional[str] = None) -> str:
     """Builds top header banner HTML with LAN IP and device badge."""
     lan_ip = get_lan_ip()
     status_banner = ""
@@ -37,7 +42,7 @@ def build_header_html(device_id: Optional[str] = None) -> str:
 
     return f"""
     <div class="header-card">
-        <h2 style="margin: 0 0 8px 0; font-size: 1.5rem;">🎬 MiniMax-H3 影片生成系統</h2>
+        <h2 style="margin: 0 0 8px 0; font-size: 1.5rem;">{title or DEFAULT_HEADER_TITLE}</h2>
         <div style="font-size: 0.95rem; opacity: 0.9; line-height: 1.6;">
             🌐 <b>連線網址：</b> <span class="ip-badge">http://{lan_ip}:{WEBUI_PORT}</span>
             {dev_str}
@@ -50,7 +55,8 @@ def build_header_html(device_id: Optional[str] = None) -> str:
 class HeaderComponent:
     """Encapsulates header banner and manual Device ID switch row."""
 
-    def __init__(self):
+    def __init__(self, header_title: str = DEFAULT_HEADER_TITLE):
+        self.header_title = header_title
         self.header_html: Optional[gr.HTML] = None
         self.edit_id_btn: Optional[gr.Button] = None
         self.edit_id_row: Optional[gr.Row] = None
@@ -59,7 +65,7 @@ class HeaderComponent:
         self.cancel_id_btn: Optional[gr.Button] = None
 
     def render(self) -> "HeaderComponent":
-        self.header_html = gr.HTML(build_header_html())
+        self.header_html = gr.HTML(build_header_html(title=self.header_title))
         self.edit_id_btn = gr.Button("✏️", elem_id="edit-id-trigger-btn", elem_classes=["hidden-trigger-btn"])
 
         with gr.Row(visible=False) as self.edit_id_row:

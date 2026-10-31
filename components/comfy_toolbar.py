@@ -25,13 +25,14 @@ class ComfyToolbarComponent:
     """Encapsulates backend status indicator and start/stop controls."""
 
     def __init__(self):
+        self.row: Optional[gr.Row] = None  # 整列可被維護閘門隱藏（Spec 任務 7）
         self.start_btn: Optional[gr.Button] = None
         self.stop_btn: Optional[gr.Button] = None
         self.status_msg: Optional[gr.Markdown] = None
         self._is_backend_starting: bool = False
 
     def render(self) -> "ComfyToolbarComponent":
-        with gr.Row():
+        with gr.Row() as self.row:
             self.start_btn = gr.Button("⚡ 檢查後端模型狀態...", variant="secondary", scale=9)
             self.stop_btn = gr.Button("🛑", variant="stop", scale=1, min_width=50)
 

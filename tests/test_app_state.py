@@ -15,6 +15,47 @@ from app import (
 from task_manager import task_manager
 
 
+class TestDeviceIPRegistry:
+    """連線裝置 IP 登記與管理頁表格欄位（Spec 2026-10-31 任務 1）。"""
+
+    def test_record_and_summary_ip(self):
+        dev = "dev_ipreg_a1b2c3"
+        task_manager.record_device_ip(dev, "::ffff:192.168.5.66")
+        assert task_manager.get_device_ip(dev) == "192.168.5.66", "::ffff: 前綴必須被剝除"
+
+        task_manager.create_task("I2V", "p", {}, device_id=dev)
+        entry = next(s for s in task_manager.get_connected_devices_summary() if s["device_id"] == dev)
+        assert entry["ip"] == "192.168.5.66"
+        assert entry["task_count"] == 1
+
+    def test_browse_only_device_appears_with_ip(self):
+        """只開過頁面、還沒生成過任務的裝置也要出現在連線裝置總覽（含 IP）。"""
+        dev = "dev_ipreg_b4c5d6"
+        task_manager.record_device_ip(dev, "10.0.0.7")
+        entry = next(s for s in task_manager.get_connected_devices_summary() if s["device_id"] == dev)
+        assert entry["ip"] == "10.0.0.7"
+        assert entry["task_count"] == 0
+
+    def test_admin_devices_table_has_ip_column(self):
+        from app import build_admin_devices_html
+        dev = "dev_ipreg_e7f8a9"
+        task_manager.record_device_ip(dev, "172.16.77.88")
+        html = build_admin_devices_html()
+        assert "連線 IP" in html
+        assert "172.16.77.88" in html
+
+    def test_restore_device_state_records_ip(self):
+        """minimax 頁 load（restore_device_state）自帶 gr.Request 時要登記 IP。"""
+        class _FakeClient:
+            host = "192.168.9.12"
+        class _FakeReq:
+            client = _FakeClient()
+
+        dev = "dev_ipreg_req1"
+        restore_device_state(dev, None, _FakeReq())
+        assert task_manager.get_device_ip(dev) == "192.168.9.12"
+
+
 class TestAppInitialization:
     def test_demo_blocks_instance(self):
         """Ensures Gradio Blocks app is properly built with all tabs."""
@@ -112,15 +153,15 @@ class TestStateRestoration:
         assert returned_task_id == task.task_id
 
         # The I2V updates start after (device_id, task_id, header, history_dropdown) -> index 4
-        # I2V (14 components):
+        # I2V (13 components; fps 拉桿已移除，Spec 2026-10-31 任務 5):
         # 4: first_frame, 5: last_frame, 6: prompt, 7: ar, 8: quality_level,
-        # 9: duration, 10: seed, 11: steps, 12: denoise, 13: fps, 14: sampler, 15: scheduler,
-        # 16: status, 17: output_video
+        # 9: duration, 10: seed, 11: steps, 12: denoise, 13: sampler, 14: scheduler,
+        # 15: status, 16: output_video
         i2v_first_frame = ret[4]
         i2v_last_frame = ret[5]
         i2v_prompt = ret[6]
         i2v_seed = ret[10]
-        i2v_video = ret[17]
+        i2v_video = ret[16]
 
         def extract_val(u):
             return u.get("value") if isinstance(u, dict) else getattr(u, "value", None)
@@ -152,11 +193,11 @@ class TestStateRestoration:
         def extract_val(u):
             return u.get("value") if isinstance(u, dict) else getattr(u, "value", None)
 
-        # T2V components start at index 4 + 14 = 18
-        # 18: prompt, 19: ar, 20: quality_level, 21: duration, 22: seed ... 29: video
-        assert extract_val(ret[18]) == "Deep underwater coral reef with luminescent fish"
-        assert extract_val(ret[22]) == 888
-        assert extract_val(ret[29]) == str(dummy_video)
+        # T2V components start at index 4 + 13 = 17
+        # 17: prompt, 18: ar, 19: quality_level, 20: duration, 21: seed ... 27: video
+        assert extract_val(ret[17]) == "Deep underwater coral reef with luminescent fish"
+        assert extract_val(ret[21]) == 888
+        assert extract_val(ret[27]) == str(dummy_video)
 
     def test_restore_state_r2v_task(self, tmp_path):
         """Tests that R2V task inputs and video are restored for the correct device."""
@@ -180,12 +221,12 @@ class TestStateRestoration:
         def extract_val(u):
             return u.get("value") if isinstance(u, dict) else getattr(u, "value", None)
 
-        # R2V components start at index 4 + 14 + 12 = 30
-        # 30: prompt, 31: ref_video, 32: ref_audio, 33..36: img1..4, 37: size,
-        # 38: ar, 39: quality_level, 40: duration, 41: seed ... 48: video
-        assert extract_val(ret[30]) == "Stylized animation of an ancient temple"
-        assert extract_val(ret[41]) == 999
-        assert extract_val(ret[48]) == str(dummy_video)
+        # R2V components start at index 4 + 13 + 11 = 28
+        # 28: prompt, 29: ref_video, 30: ref_audio, 31..34: img1..4, 35: size,
+        # 36: ar, 37: quality_level, 38: duration, 39: seed ... 45: video
+        assert extract_val(ret[28]) == "Stylized animation of an ancient temple"
+        assert extract_val(ret[39]) == 999
+        assert extract_val(ret[45]) == str(dummy_video)
 
     def test_restore_state_strict_device_isolation(self, tmp_path):
         """
@@ -408,8 +449,8 @@ class TestStateRestoration:
 
         # 1. Switch to short 6-digit ID
         res = switch_manual_device_id("71c8f5", None, None)
-        assert len(all_restored_outputs) == 55
-        assert len(res) == len(all_restored_outputs) + 1  # 1 (edit_row) + 55 outputs
+        assert len(all_restored_outputs) == 52
+        assert len(res) == len(all_restored_outputs) + 1  # 1 (edit_row) + 52 outputs
         edit_row_update = res[0]
         assigned_id = res[1]
         header_update = res[3]
@@ -589,7 +630,6 @@ class TestStateRestoration:
                 denoise=1.0,
                 sampler="res_multistep",
                 scheduler="simple",
-                fps=24,
                 current_session_task=None,
                 device_id="dev_test_status",
             ))

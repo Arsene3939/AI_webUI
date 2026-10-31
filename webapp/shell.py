@@ -11,10 +11,13 @@ what must stay identical across pages:
 """
 import gradio as gr
 
+from config import get_server_status, SERVER_STATUS_UPDATING
+from core.admin_manager import AdminManager
 from core.session_context import SessionContext
-from components.header import HeaderComponent
+from components.header import HeaderComponent, DEFAULT_HEADER_TITLE
 from components.dashboard_sidebar import DashboardNavComponent
 from components.comfy_toolbar import ComfyToolbarComponent
+from task_manager import task_manager
 
 # Dark app theme: the entire UI chrome (header/sidebar/status boxes) is dark by design,
 # so the gradio theme is pinned dark (light AND dark variants of each token) to stop
@@ -128,8 +131,9 @@ class WebPageScaffold:
 
     module_key: str = ""
 
-    def __init__(self, title: str = "MiniMax-H3 AI Video WebUI"):
+    def __init__(self, title: str = "MiniMax-H3 AI Video WebUI", header_title: str = DEFAULT_HEADER_TITLE):
         self.title = title
+        self.header_title = header_title
         self.blocks: gr.Blocks | None = None
         self.session_ctx: SessionContext | None = None
         self.device_id_state = None
@@ -148,7 +152,7 @@ class WebPageScaffold:
             self.session_task_state = self.session_ctx.session_task_state
 
             # 2. Header Banner & Device ID Controls
-            self.header_comp = HeaderComponent().render()
+            self.header_comp = HeaderComponent(header_title=self.header_title).render()
 
             # 3. Sidebar Dashboard (page links; this page is the active one)
             self.dashboard_comp = DashboardNavComponent(active_module=self.module_key).render()
@@ -176,18 +180,90 @@ class WebPageScaffold:
         manual_input = self.header_comp.manual_id_input
         save_btn = self.header_comp.save_id_btn
 
-        def switch_device_id(custom_id, current_device_id):
+        def switch_device_id(custom_id, current_device_id, request: gr.Request = None):
             val = (custom_id or "").strip()
             if not val:
                 return (
                     gr.update(visible=False),
                     gr.update(),
                     gr.update(),
-                    build_header_html(device_id=current_device_id),
+                    build_header_html(device_id=current_device_id, title=self.header_title),
                 )
             target_id = _SC.ensure_device_id(val)
-            return gr.update(visible=False), target_id, "", build_header_html(device_id=target_id)
+            client = getattr(request, "client", None)
+            if client is not None:
+                task_manager.record_device_ip(target_id, getattr(client, "host", ""))
+            return gr.update(visible=False), target_id, "", build_header_html(device_id=target_id, title=self.header_title)
 
         outputs = [edit_row, self.device_id_state, self.session_task_state, self.header_comp.header_html]
         save_btn.click(switch_device_id, inputs=[manual_input, self.device_id_state], outputs=outputs)
         manual_input.submit(switch_device_id, inputs=[manual_input, self.device_id_state], outputs=outputs)
+
+    def wire_maintenance_gate(self, gated: list, own_header: bool = False):
+        """
+        維護可見性閘門（Spec 2026-10-31 任務 7）：
+        SERVER_STATUS=UPDATING 時，非管理員（is_super_user 為 False）在任何模組頁
+        都只看到 header 的「🔧 伺服器維護/更新中」橫幅，gated 列出的所有頁面主體
+        全部隱藏；維護結束的瞬間由 0.5s timer 自動恢復，不需重新整理。
+
+        own_header=True（/upscaler、/strata 用）：同一個 load handler 順帶確保
+        裝置 ID 存在、記錄連線 IP（任務 1）、重繪 header 裝置徽章（任務 4）——
+        單一寫入者，不會和 minimax 那套 restore 重繪打架。
+        own_header=False（/minimax 用）：ID／header／IP 都歸該頁自己的
+        restore_device_state 管，這裡只做可見性閘門。
+        """
+        from components.header import build_header_html
+
+        def is_blocked(request) -> bool:
+            return get_server_status() == SERVER_STATUS_UPDATING and not AdminManager.is_super_user(request)
+
+        def record_ip(dev_id, request):
+            client = getattr(request, "client", None)
+            if client is not None:
+                task_manager.record_device_ip(dev_id, getattr(client, "host", ""))
+
+        if own_header:
+            def load_gate(device_id, request: gr.Request = None):
+                target = SessionContext.ensure_device_id(device_id)
+                record_ip(target, request)
+                blocked = is_blocked(request)
+                header = build_header_html(device_id=target, title=self.header_title)
+                return (target, header, *(gr.update(visible=not blocked) for _ in gated))
+
+            self.blocks.load(
+                load_gate,
+                inputs=[self.device_id_state],
+                outputs=[self.device_id_state, self.header_comp.header_html, *gated],
+                api_name=False,
+            )
+        else:
+            def load_gate(device_id, request: gr.Request = None):
+                record_ip(device_id, request)
+                blocked = is_blocked(request)
+                return tuple(gr.update(visible=not blocked) for _ in gated)
+
+            self.blocks.load(
+                load_gate,
+                inputs=[self.device_id_state],
+                outputs=list(gated),
+                api_name=False,
+            )
+
+        # 維護開始/結束的即時切換：可見性狀態沒變就完全不寫輸出（避免每 0.5s 重繪）
+        _last_blocked: dict = {}
+
+        def tick_gate(device_id, request: gr.Request = None):
+            blocked = is_blocked(request)
+            if _last_blocked.get("state") == blocked:
+                return (gr.update(), *(gr.update() for _ in gated))
+            _last_blocked["state"] = blocked
+            # 首次載入的競態防護：BrowserState 還沒寫回時不要蓋掉 restore 畫好的徽章
+            header = build_header_html(device_id=device_id or None, title=self.header_title) if device_id else gr.update()
+            return (header, *(gr.update(visible=not blocked) for _ in gated))
+
+        self.backend_poll_timer.tick(
+            tick_gate,
+            inputs=[self.device_id_state],
+            outputs=[self.header_comp.header_html, *gated],
+            api_name=False,
+        )

@@ -17,14 +17,17 @@ ASGI assembly for the routed WebUI (Spec 2026-10-31, 方案A; spike-verified pat
 theme/css/head ride the mount calls — gradio applies them when serving each
 page's index (verified: mount params land in the served HTML).
 """
+import os
 from typing import Dict, List, Optional
 
 import gradio as gr
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.responses import FileResponse
 
 from config import OUTPUT_DIR
-from components.styles import CUSTOM_CSS, CUSTOM_HEAD_JS
+from components.styles import CUSTOM_CSS, CUSTOM_HEAD_JS, FAVICON_HTML
 
 from .shell import APP_THEME, TAB_SEGMENTS, LAST_PAGE_STORAGE_KEY, build_tab_router_js
 from . import pages_minimax, pages_upscaler, pages_strata
@@ -40,7 +43,8 @@ ROOT_HTML = """<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
-<title>AI WebUI</title>
+<title>AI 影片工作平台</title>
+__FAVICON__
 <script>
 (function () {
     var page = '/minimax';
@@ -54,7 +58,13 @@ ROOT_HTML = """<!DOCTYPE html>
 正在載入上次使用的頁面…（若未跳轉請直接選擇 <a style="color:#38bdf8" href="/minimax">/minimax</a>）
 </body>
 </html>
-""".replace("%STORAGE_KEY%", LAST_PAGE_STORAGE_KEY)
+""".replace("%STORAGE_KEY%", LAST_PAGE_STORAGE_KEY).replace("__FAVICON__", FAVICON_HTML)
+
+# 站體靜態資產（favicon 等；Spec 任務 2）：掛在 ASGI 根 /assets，
+# 三個 gradio mount 只攔自己前綴，不會遮到這個路徑。
+ASSETS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets"
+)
 
 _asgi_app: Optional[FastAPI] = None
 
@@ -74,6 +84,17 @@ def create_asgi_app(extra_allowed_paths: Optional[List[str]] = None) -> FastAPI:
     @app.get("/", include_in_schema=False)
     def root_redirect_page():
         return HTMLResponse(ROOT_HTML)
+
+    # favicon 兜底：有些瀏覽器無視 <link> 直接打 /favicon.ico
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon_fallback():
+        icon = os.path.join(ASSETS_DIR, "app_icon.png")
+        if os.path.exists(icon):
+            return FileResponse(icon, media_type="image/png")
+        return HTMLResponse("", status_code=404)
+
+    if os.path.isdir(ASSETS_DIR):
+        app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 
     @app.middleware("http")
     async def tab_deeplink_rewrite(request: Request, call_next):
@@ -96,7 +117,9 @@ def create_asgi_app(extra_allowed_paths: Optional[List[str]] = None) -> FastAPI:
             f"/{name}",
             theme=APP_THEME,
             css=CUSTOM_CSS,
-            head=CUSTOM_HEAD_JS + build_tab_router_js(),
+            # FAVICON_HTML：站體 favicon（任務 2）；head= 原樣注入 <head>，
+            # SVG data URI 不需额外静态挂载也不会被 CSP 外部资源限制卡住
+            head=FAVICON_HTML + CUSTOM_HEAD_JS + build_tab_router_js(),
             allowed_paths=sorted(set(allowed)),
             show_error=True,
         )

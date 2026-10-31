@@ -468,6 +468,11 @@ def align_frame_count(frame_count: int) -> int:
     return n
 
 
+# MiniMax-H3 只支援 24fps 輸出（Spec 2026-10-31 任務 5）：
+# UI 不再提供影格率選項，三個生成 tab 一律以此值提交工作流。
+MINIMAX_FIXED_FPS = 24
+
+
 def duration_to_frames(duration_seconds: float, fps: int = 24) -> int:
     """Convert duration in seconds to aligned frame count."""
     raw_frames = round(duration_seconds * fps)

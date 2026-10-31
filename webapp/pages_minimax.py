@@ -14,6 +14,7 @@ from task_manager import task_manager
 from utils.logger import get_logger
 
 from core.admin_manager import AdminManager
+from core.director_builder import load_director_system_prompt
 from components.header import build_header_html
 from components.media_player import build_progress_html
 from components.history_gallery import get_history_dropdown_choices
@@ -33,7 +34,7 @@ class MiniMaxPage(WebPageScaffold):
     module_key = "minimax"
 
     def __init__(self):
-        super().__init__(title="MiniMax-H3 AI Video WebUI")
+        super().__init__(title="🎬 MiniMax-H3 影片生成｜AI 影片工作平台")  # 瀏覽器分頁標題（任務 2）
         self.minimax_view: Optional[MiniMaxView] = None
         self.history_dropdown = None
         self.all_restored_outputs: list = []
@@ -79,7 +80,25 @@ class MiniMaxPage(WebPageScaffold):
                 outputs=[self.minimax_view.admin_tab.tab],
             )
 
-            # Backward-compatible state restoration outputs (55 components)
+            # 維護可見性閘門（Spec 任務 7）。own_header=False：裝置 ID／header
+            # 重繪／IP 記錄由下面的 restore_device_state 負責，此處只藏主體。
+            # 註冊順序刻意在 restore 的 load 之前，load 期間 header 的最後寫入者
+            # 會是 restore（帶正確徽章），不會被門戶的空徽章蓋掉。
+            self.wire_maintenance_gate(
+                [self.minimax_view.container, self.toolbar_comp.row, self.dashboard_comp.sidebar],
+                own_header=False,
+            )
+
+            # 管理員系統提示詞編輯器：每次開頁從檔案重抓最新內容
+            # （PAGE 是模組層單例，建置期快照會把「已存檔的提示詞」顯示成舊值 — 任務 3）
+            self.blocks.load(
+                lambda: gr.update(value=load_director_system_prompt()),
+                outputs=[self.minimax_view.admin_tab.director_prompt_editor],
+                api_name=False,
+            )
+
+            # Backward-compatible state restoration outputs (52 components;
+            # fps 拉桿移除後 55 -> 52，Spec 2026-10-31 任務 5)
             self.history_dropdown = self.minimax_view.history_gallery.dropdown
             self.all_restored_outputs = [
                 self.device_id_state,
@@ -135,10 +154,15 @@ class MiniMaxPage(WebPageScaffold):
     # ------------------------------------------------------------------
     # Device state handlers (formerly closures inside app.py's single Blocks)
     # ------------------------------------------------------------------
-    def restore_device_state(self, stored_device_id: Optional[str], stored_task_id: Optional[str]):
+    def restore_device_state(self, stored_device_id: Optional[str], stored_task_id: Optional[str], request: gr.Request = None):
         """Restores inputs, parameters, and generated video for THIS specific device."""
         if not stored_device_id:
             stored_device_id = f"dev_{uuid.uuid4().hex[:6]}"
+
+        # 連線裝置 IP 登記（Spec 任務 1）：管理頁「連線裝置總覽」的 IP 欄位來源
+        client = getattr(request, "client", None)
+        if client is not None:
+            task_manager.record_device_ip(stored_device_id, getattr(client, "host", ""))
 
         task = (
             task_manager.get_task(stored_task_id, device_id=stored_device_id, module="minimax")
@@ -160,14 +184,14 @@ class MiniMaxPage(WebPageScaffold):
             *btn_updates,
         )
 
-    def switch_manual_device_id(self, custom_id: str, current_device_id: str, session_task_id: str):
+    def switch_manual_device_id(self, custom_id: str, current_device_id: str, session_task_id: str, request: gr.Request = None):
         """Allows user to switch to a remembered device ID without exposing others."""
         val = (custom_id or "").strip()
         if not val:
-            return (gr.update(visible=False), *self.restore_device_state(current_device_id, session_task_id))
+            return (gr.update(visible=False), *self.restore_device_state(current_device_id, session_task_id, request))
         target_id = val if val.startswith("dev_") else f"dev_{val}"
         logger.info("[Session] Device ID manual switch: '%s' -> '%s'", current_device_id, target_id)
-        return (gr.update(visible=False), *self.restore_device_state(target_id, None))
+        return (gr.update(visible=False), *self.restore_device_state(target_id, None, request))
 
     def poll_active_task_progress(self, stored_device_id: Optional[str], stored_task_id: Optional[str]):
         """Polled every 1s to detect background completion or progress without full refresh."""

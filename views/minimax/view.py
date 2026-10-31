@@ -77,7 +77,7 @@ class MiniMaxView(ComfyUIBaseView):
 
     def get_restore_components(self) -> List[Any]:
         """
-        Returns all 45 sub-components belonging to MiniMax (I2V 14 + T2V 12 + R2V 19).
+        Returns all 42 sub-components belonging to MiniMax (I2V 13 + T2V 11 + R2V 18).
         Buttons are also accessible via get_action_buttons().
         """
         return (
@@ -96,11 +96,11 @@ class MiniMaxView(ComfyUIBaseView):
     def restore_state(self, task: Optional[Any], device_id: str) -> Tuple[List[Any], List[Any]]:
         """
         Restores MiniMax inputs, parameters, and action button states for the device.
-        Returns (content_updates [45 items], button_updates [6 items]).
+        Returns (content_updates [42 items], button_updates [6 items]).
         """
-        i2v_updates = [gr.update()] * 14
-        t2v_updates = [gr.update()] * 12
-        r2v_updates = [gr.update()] * 19
+        i2v_updates = [gr.update()] * 13
+        t2v_updates = [gr.update()] * 11
+        r2v_updates = [gr.update()] * 18
 
         if task and getattr(task, "params", None):
             p = task.params
@@ -115,7 +115,6 @@ class MiniMaxView(ComfyUIBaseView):
                     gr.update(value=p.get("seed", 1)),
                     gr.update(value=p.get("steps", 20)),
                     gr.update(value=p.get("denoise", 1.0)),
-                    gr.update(value=p.get("fps", 24)),
                     gr.update(value=normalize_sampler(p.get("sampler"))),
                     gr.update(value=normalize_scheduler(p.get("scheduler"))),
                     gr.update(value=build_progress_html(task)),
@@ -130,7 +129,6 @@ class MiniMaxView(ComfyUIBaseView):
                     gr.update(value=p.get("seed", 1)),
                     gr.update(value=p.get("steps", 20)),
                     gr.update(value=p.get("denoise", 1.0)),
-                    gr.update(value=p.get("fps", 24)),
                     gr.update(value=normalize_sampler(p.get("sampler"))),
                     gr.update(value=normalize_scheduler(p.get("scheduler"))),
                     gr.update(value=build_progress_html(task)),
@@ -152,7 +150,6 @@ class MiniMaxView(ComfyUIBaseView):
                     gr.update(value=p.get("seed", 1)),
                     gr.update(value=p.get("steps", 20)),
                     gr.update(value=p.get("denoise", 1.0)),
-                    gr.update(value=p.get("fps", 24)),
                     gr.update(value=normalize_sampler(p.get("sampler"))),
                     gr.update(value=normalize_scheduler(p.get("scheduler"))),
                     gr.update(value=build_progress_html(task)),

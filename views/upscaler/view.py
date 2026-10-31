@@ -24,6 +24,9 @@ logger = get_logger("UpscalerView")
 def handle_upscale_generate(
     video_file: Optional[str],
     model: str,
+    output_format: str = "auto",
+    post_scale: float = 0,
+    bit_depth: int = 8,
     device_id: Optional[str] = None,
     current_session_task: Optional[str] = None,
 ):
@@ -64,15 +67,25 @@ def handle_upscale_generate(
         yield build_progress_html(f"❌ 影片上傳失敗: {str(e)}"), None, current_session_task, device_id
         return
 
+    # 進階輸出參數（Spec 任務 6）：0/None 都代表不額外縮放
     prompt_graph = build_upscale_workflow(
         video_filename=uploaded_fn,
         model_name=model,
+        output_format=output_format or "auto",
+        bit_depth=int(bit_depth or 8),
+        post_scale=float(post_scale) if post_scale else None,
     )
 
     task = task_manager.create_task(
         task_type="UPSCALER",
         prompt=f"Upscale video with {model}",
-        params={"video": video_file, "model": model},
+        params={
+            "video": video_file,
+            "model": model,
+            "output_format": output_format or "auto",
+            "bit_depth": int(bit_depth or 8),
+            "post_scale": float(post_scale) if post_scale else 0,
+        },
         device_id=device_id,
     )
 
@@ -100,6 +113,9 @@ class UpscalerView(ComfyUIBaseView):
         self.tabs: Optional[gr.Tabs] = None
         self.input_video: Optional[gr.Video] = None
         self.upscale_model: Optional[gr.Dropdown] = None
+        self.output_format: Optional[gr.Radio] = None
+        self.output_scale: Optional[gr.Dropdown] = None
+        self.bit_depth: Optional[gr.Radio] = None
         self.refresh_model_btn: Optional[gr.Button] = None
         self.generate_btn: Optional[gr.Button] = None
         self.stop_btn: Optional[gr.Button] = None
@@ -141,6 +157,33 @@ class UpscalerView(ComfyUIBaseView):
                                     variant="secondary",
                                 )
 
+                            # 進階輸出設定（Spec 2026-10-31 任務 6；預設值＝舊版行為）
+                            with gr.Accordion("🎛️ 進階輸出設定", open=False):
+                                with gr.Row():
+                                    self.output_scale = gr.Dropdown(
+                                        choices=[
+                                            ("模型原生倍率（不額外縮放）", 0),
+                                            ("輸出再縮小至 1/2", 0.5),
+                                            ("輸出再縮小至 1/4", 0.25),
+                                        ],
+                                        value=0,
+                                        label="輸出縮放",
+                                        info="本機模型都是 4 倍放大；縮小輸出可加快後續處理並減小檔案",
+                                        filterable=False,
+                                    )
+                                with gr.Row():
+                                    self.output_format = gr.Radio(
+                                        choices=[("自動（推薦）", "auto"), ("MP4", "mp4")],
+                                        value="auto",
+                                        label="輸出格式",
+                                    )
+                                    self.bit_depth = gr.Radio(
+                                        choices=[("8-bit（兼容性最佳）", 8), ("10-bit（漸層更平滑）", 10)],
+                                        value=8,
+                                        label="位元深度",
+                                        info="10-bit 色彩漸層較不易出現色帶，部分播放器可能不支援",
+                                    )
+
                             self.generate_btn = gr.Button(
                                 "🚀 開始影片超解析放大",
                                 variant="primary",
@@ -175,10 +218,13 @@ class UpscalerView(ComfyUIBaseView):
                 outputs=[self.upscale_model],
             )
 
-        def generate_wrapper(video_file, model, session_task, device_id):
+        def generate_wrapper(video_file, model, output_format, post_scale, bit_depth, session_task, device_id):
             for progress_html, video_out, task_id, dev_id in handle_upscale_generate(
                 video_file=video_file,
                 model=model,
+                output_format=output_format,
+                post_scale=post_scale,
+                bit_depth=bit_depth,
                 device_id=device_id,
                 current_session_task=session_task,
             ):
@@ -193,6 +239,9 @@ class UpscalerView(ComfyUIBaseView):
                 inputs=[
                     self.input_video,
                     self.upscale_model,
+                    self.output_format,
+                    self.output_scale,
+                    self.bit_depth,
                     session_ctx.session_task_state,
                     session_ctx.device_id_state,
                 ],

@@ -359,6 +359,9 @@ class UpscalerE2ETestRunner:
             job = self.client.submit(
                 gradio_client.handle_file(test_video),  # input_video
                 chosen_model,                           # upscale_model
+                "auto",                                 # output_format
+                0,                                      # output_scale（0＝不額外縮放）
+                8,                                      # bit_depth
                 None,                                   # session_task_state
                 user_device_id,                         # device_id_state
                 api_name="/handle_upscale_generate",
@@ -461,7 +464,6 @@ class UpscalerE2ETestRunner:
                 1.0,                                   # denoise
                 "res_multistep",                       # sampler
                 "simple",                              # scheduler
-                24,                                    # fps
                 None,                                  # session_task_state
                 cross_dev,                             # device_id_state
                 api_name="/handle_i2v_generate",
@@ -488,6 +490,9 @@ class UpscalerE2ETestRunner:
             up_job = self.client.submit(
                 gradio_client.handle_file(cross_video),
                 chosen_model,
+                "auto",  # output_format
+                0,       # output_scale
+                8,       # bit_depth
                 None,
                 cross_dev,
                 api_name="/handle_upscale_generate",

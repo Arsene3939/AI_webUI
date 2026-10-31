@@ -368,7 +368,6 @@ class E2ETestRunner:
                 1.0,
                 "res_multistep",
                 "simple",
-                24,
                 None,
                 user_device_id,
                 api_name="/handle_i2v_generate",

@@ -1,6 +1,7 @@
 """
 Reusable video generation parameters UI component (DRY principle).
-Encapsulates aspect ratio, quality level, duration, steps, fps, seed, denoise, sampler, and scheduler.
+Encapsulates aspect ratio, quality level, duration, steps, seed, denoise, sampler, and scheduler.
+(Spec 2026-10-31 任務 5: fps 拉桿已移除 — MiniMax-H3 只支援 24fps，生成端固定用 MINIMAX_FIXED_FPS。)
 """
 import random
 import os
@@ -64,7 +65,6 @@ class VideoParamsComponent:
         default_quality: str = DEFAULT_QUALITY_LEVEL,
         default_duration: float = 2.0,
         default_steps: int = 20,
-        default_fps: int = 24,
         include_director_model: bool = False,
     ):
         # 導演模型下拉收在「⚙️ 進階參數」裡（Spec 2026-10-31 UI 簡化案）：
@@ -75,14 +75,12 @@ class VideoParamsComponent:
         self.default_quality = default_quality
         self.default_duration = default_duration
         self.default_steps = default_steps
-        self.default_fps = default_fps
 
         self.aspect_ratio: Optional[gr.Dropdown] = None
         self.quality_level: Optional[gr.Dropdown] = None
         self.res_info: Optional[gr.Markdown] = None
         self.duration: Optional[gr.Slider] = None
         self.steps: Optional[gr.Slider] = None
-        self.fps: Optional[gr.Slider] = None
         self.seed: Optional[gr.Number] = None
         self.rand_btn: Optional[gr.Button] = None
         self.denoise: Optional[gr.Slider] = None
@@ -111,7 +109,7 @@ class VideoParamsComponent:
         with gr.Row():
             self.res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP)")
 
-        # Row 2: Duration, Steps, FPS
+        # Row 2: Duration, Steps（影格率固定 24fps，不開放調整 — Spec 任務 5）
         with gr.Row():
             with gr.Column():
                 self.duration = gr.Slider(
@@ -122,11 +120,6 @@ class VideoParamsComponent:
                 self.steps = gr.Slider(
                     minimum=1, maximum=50, value=self.default_steps, step=1,
                     label="取樣步數", scale=2
-                )
-            with gr.Column():
-                self.fps = gr.Slider(
-                    minimum=12, maximum=60, value=self.default_fps, step=1,
-                    label="影格率 (FPS)", scale=2
                 )
 
         with gr.Accordion("⚙️ 進階參數", open=False):

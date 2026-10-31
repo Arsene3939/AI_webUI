@@ -13,7 +13,10 @@ class StrataPage(WebPageScaffold):
     module_key = "strata"
 
     def __init__(self):
-        super().__init__(title="strata: Qwen3.8-flash-next LLM")
+        super().__init__(
+            title="💬 Strata 智慧助理｜AI 影片工作平台",                      # 瀏覽器分頁標題（任務 2）
+            header_title="💬 Strata 智慧助理系統",                            # 頁內 header 主標（任務 4）
+        )
         self.strata_view: StrataView | None = None
         self.build()
         self._build_page()
@@ -28,6 +31,12 @@ class StrataPage(WebPageScaffold):
 
             # Manual device ID switch (generic)
             self.wire_generic_device_switch()
+
+            # 裝置 ID 徽章/生成/IP 記錄 + 維護可見性閘門（Spec 任務 1/4/7）
+            self.wire_maintenance_gate(
+                [self.strata_view.container, self.toolbar_comp.row, self.dashboard_comp.sidebar],
+                own_header=True,
+            )
 
             # Super User dynamic visibility on page load
             def update_admin_tab_visibility(request: gr.Request):

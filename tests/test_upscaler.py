@@ -57,6 +57,37 @@ class TestUpscalerWorkflowBuilder:
         assert graph["12"]["inputs"]["video"] == ["11", 0]
         assert "filename_prefix" in graph["12"]["inputs"]
 
+    def test_advanced_output_params(self):
+        """Spec 2026-10-31 任務 6：輸出格式 / 位元深度 / 輸出縮放（ImageScaleBy 結點 13）。"""
+        graph = build_upscale_workflow(
+            "in.mp4", "4x-UltraSharp.safetensors",
+            output_format="mp4", bit_depth=10, post_scale=0.5,
+        )
+        assert graph["12"]["inputs"]["format"] == "mp4"
+        assert graph["11"]["inputs"]["bit_depth"] == 10
+        # 縮放結點插在模型放大與 CreateVideo 之間，且只降不拉伸（area）
+        assert graph["13"]["class_type"] == "ImageScaleBy"
+        assert graph["13"]["inputs"]["image"] == ["2", 0]
+        assert graph["13"]["inputs"]["upscale_method"] == "area"
+        assert graph["13"]["inputs"]["scale_by"] == 0.5
+        assert graph["11"]["inputs"]["images"] == ["13", 0]
+
+    def test_default_params_reproduce_legacy_graph(self):
+        """零回歸：預設值（auto / 8bit / 不縮放）必須產出與舊版逐字節相同的圖。"""
+        legacy = build_upscale_workflow("in.mp4", "m")
+        explicit = build_upscale_workflow("in.mp4", "m", output_format="auto", bit_depth=8, post_scale=0)
+        assert "13" not in legacy and "13" not in explicit
+        assert legacy["11"]["inputs"]["images"] == ["2", 0]
+        assert legacy["11"]["inputs"]["bit_depth"] == 8
+        assert legacy["12"]["inputs"]["format"] == "auto"
+        assert legacy == explicit
+
+    def test_invalid_advanced_values_fall_back(self):
+        """不支援的容器格式/位元深度要退回安全預設（SaveVideo VideoContainer 只有 auto|mp4）。"""
+        graph = build_upscale_workflow("in.mp4", "m", output_format="webm", bit_depth=12)
+        assert graph["12"]["inputs"]["format"] == "auto"
+        assert graph["11"]["inputs"]["bit_depth"] == 8
+
 
 class TestUpscalerModelDiscovery:
     def test_get_upscale_models_from_directory(self):

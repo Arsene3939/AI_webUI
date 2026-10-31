@@ -10,6 +10,7 @@ from config import (
     T2V_ASPECT_RATIOS,
     DEFAULT_QUALITY_LEVEL,
     DEFAULT_MULTIPLE,
+    MINIMAX_FIXED_FPS,
     DEFAULT_UNET,
     DEFAULT_CLIP,
     DEFAULT_VIDEO_VAE,
@@ -41,7 +42,6 @@ def handle_t2v_generate(
     denoise,
     sampler,
     scheduler,
-    fps,
     current_session_task,
     device_id,
     custom_w=None,
@@ -84,7 +84,7 @@ def handle_t2v_generate(
         denoise=float(denoise),
         sampler_name=sampler,
         scheduler_name=scheduler,
-        fps=float(fps),
+        fps=float(MINIMAX_FIXED_FPS),  # 模型只支援 24fps（Spec 任務 5）
         unet_name=DEFAULT_UNET,
         clip_name=DEFAULT_CLIP,
         video_vae_name=DEFAULT_VIDEO_VAE,
@@ -101,7 +101,7 @@ def handle_t2v_generate(
         "denoise": denoise,
         "sampler": sampler,
         "scheduler": scheduler,
-        "fps": fps,
+        "fps": MINIMAX_FIXED_FPS,
         "width": w,
         "height": h,
     }
@@ -132,7 +132,6 @@ class T2VTab:
             default_quality=DEFAULT_QUALITY_LEVEL,
             default_duration=2.0,
             default_steps=20,
-            default_fps=24,
         )
         self.action_btns = ActionButtonsComponent(generate_label="🚀 開始生成影片")
         self.player_card = VideoPlayerCardComponent(label="生成影片")
@@ -179,7 +178,6 @@ class T2VTab:
                 self.params_card.duration, self.params_card.seed,
                 self.params_card.steps, self.params_card.denoise,
                 self.params_card.sampler, self.params_card.scheduler,
-                self.params_card.fps,
                 session_task_state, device_id_state,
             ],
             outputs=[self.player_card.status, self.player_card.output_video, session_task_state, device_id_state],
@@ -206,7 +204,6 @@ class T2VTab:
             self.params_card.seed,
             self.params_card.steps,
             self.params_card.denoise,
-            self.params_card.fps,
             self.params_card.sampler,
             self.params_card.scheduler,
             self.player_card.status,

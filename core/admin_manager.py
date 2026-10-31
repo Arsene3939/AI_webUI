@@ -312,6 +312,7 @@ class AdminManager:
             rows.append(
                 f'<tr style="border-bottom: 1px solid #f1f5f9;">'
                 f'<td style="padding: 8px 12px; font-weight: 600;"><code>{s["device_id"]}</code></td>'
+                f'<td style="padding: 8px 12px;"><code>{s.get("ip") or "—"}</code></td>'
                 f'<td style="padding: 8px 12px;">{s["task_count"]}</td>'
                 f'<td style="padding: 8px 12px;">{s["completed_count"]}</td>'
                 f'<td style="padding: 8px 12px; color: #64748b;">{t_str}</td>'
@@ -323,6 +324,7 @@ class AdminManager:
             <thead>
                 <tr style="background: #f8fafc; border-bottom: 1.5px solid #e2e8f0; text-align: left; color: #475569;">
                     <th style="padding: 10px 12px;">裝置代碼 (Device ID)</th>
+                    <th style="padding: 10px 12px;">連線 IP</th>
                     <th style="padding: 10px 12px;">總任務數</th>
                     <th style="padding: 10px 12px;">成功生成</th>
                     <th style="padding: 10px 12px;">最後活躍時間</th>

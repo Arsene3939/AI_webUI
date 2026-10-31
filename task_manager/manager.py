@@ -36,6 +36,10 @@ class TaskManager:
         self._dispatch_queue: deque = deque()  # entries: (task_id, prompt_graph, server_url)
         self._dispatcher_started = False
         self._executing_task_id: Optional[str] = None
+        # 裝置→IP 連線登記表（Spec 2026-10-31 任務 1）：由帶 gr.Request 的頁面
+        # load／裝置切換事件寫入。屬即時連線狀態，刻意不寫入任務歷史檔（重啟後
+        # 由使用者重新載入頁面自然重建，也避免把訪客 IP 長期落地）。
+        self._device_ips: Dict[str, Dict[str, Any]] = {}
         self._load_history()
 
     def _load_history(self):
@@ -350,8 +354,30 @@ class TaskManager:
                 count += 1
         return count
 
+    def record_device_ip(self, device_id: Optional[str], ip: Optional[str]):
+        """Registers/refreshes the latest seen IP for a device (connection-state only)."""
+        if not device_id or not ip:
+            return
+        d = str(device_id)
+        clean_ip = str(ip).strip()
+        # gradio often reports IPv4-mapped IPv6 hosts; keep the readable IPv4 form.
+        if clean_ip.startswith("::ffff:"):
+            clean_ip = clean_ip[len("::ffff:"):]
+        if not clean_ip:
+            return
+        with self._lock:
+            self._device_ips[d] = {"ip": clean_ip, "last_seen": time.time()}
+
+    def get_device_ip(self, device_id: Optional[str]) -> Optional[str]:
+        if not device_id:
+            return None
+        with self._lock:
+            info = self._device_ips.get(str(device_id))
+            return info["ip"] if info else None
+
     def get_connected_devices_summary(self) -> List[Dict[str, Any]]:
-        """Returns aggregated summary of all known devices from task history."""
+        """Returns aggregated summary of all known devices from task history,
+        merged with the live device→IP connection registry (任務 1)."""
         device_map: Dict[str, Dict[str, Any]] = {}
         with self._lock:
             for t in self._tasks.values():
@@ -363,12 +389,28 @@ class TaskManager:
                         "task_count": 0,
                         "completed_count": 0,
                         "last_active": t.created_at,
+                        "ip": "",
                     }
                 device_map[d]["task_count"] += 1
                 if t.status == "completed":
                     device_map[d]["completed_count"] += 1
                 if t.created_at > device_map[d]["last_active"]:
                     device_map[d]["last_active"] = t.created_at
+
+            # Devices currently browsing (load 記錄到 IP) but with no tasks yet
+            # still belong in the 連線裝置總覽 — that's what "連線裝置" means.
+            for d, info in self._device_ips.items():
+                if d not in device_map:
+                    device_map[d] = {
+                        "device_id": d,
+                        "short_id": d.split("_")[-1][:6] if "_" in d else d[:6],
+                        "task_count": 0,
+                        "completed_count": 0,
+                        "last_active": info["last_seen"],
+                    }
+                device_map[d]["ip"] = info["ip"]
+                if info["last_seen"] > device_map[d]["last_active"]:
+                    device_map[d]["last_active"] = info["last_seen"]
 
         summary_list = list(device_map.values())
         summary_list.sort(key=lambda x: x["last_active"], reverse=True)

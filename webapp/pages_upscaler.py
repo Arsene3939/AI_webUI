@@ -14,7 +14,10 @@ class UpscalerPage(WebPageScaffold):
     module_key = "upscaler"
 
     def __init__(self):
-        super().__init__(title="comfyUI: video resolution upscaler")
+        super().__init__(
+            title="🔍 畫質放大 (Video Upscaler)｜AI 影片工作平台",           # 瀏覽器分頁標題（任務 2）
+            header_title="🔍 影片畫質放大系統",                              # 頁內 header 主標（任務 4：三頁共用同一套介面元素）
+        )
         self.upscaler_view: UpscalerView | None = None
         self.build()
         self._build_page()
@@ -30,6 +33,13 @@ class UpscalerPage(WebPageScaffold):
 
             # Manual device ID switch (generic: no minimax-style form restoration)
             self.wire_generic_device_switch()
+
+            # 裝置 ID 徽章/生成/IP 記錄 + 維護可見性閘門（Spec 任務 1/4/7）：
+            # own_header=True → load 時统一由這個 handler 寫 header 與 device id
+            self.wire_maintenance_gate(
+                [self.upscaler_view.container, self.toolbar_comp.row, self.dashboard_comp.sidebar],
+                own_header=True,
+            )
 
             # Super User dynamic visibility on page load
             def update_admin_tab_visibility(request: gr.Request):

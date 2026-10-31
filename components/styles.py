@@ -2,6 +2,14 @@
 CSS and JavaScript definitions for MiniMax-H3 and multi-module AI WebUI.
 """
 
+# ── Site favicon (Spec 2026-10-31 任務 2) ───────────────────────────────────
+# 使用者自製的站 icon（影格+播放鍵）：assets/app_icon.png。
+# webapp/server.py 在 ASGI 根掛 /assets 靜態目錄提供這個檔；三個模組頁與 "/"
+# 跳轉頁的 <head> 都注入下面的 link（絕對路徑，跨 mount 通用）。
+# 另外 server.py 掛了 /favicon.ico 路由兜底直接打 /favicon.ico 的瀏覽器。
+FAVICON_FILE = "assets/app_icon.png"
+FAVICON_HTML = f'<link rel="icon" type="image/png" href="/{FAVICON_FILE}">'
+
 CUSTOM_CSS = """
 /* Responsive adjustments for mobile screens */
 .container {

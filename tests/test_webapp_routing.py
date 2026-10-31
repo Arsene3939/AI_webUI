@@ -148,6 +148,140 @@ def test_every_load_handler_executes_cleanly():
             assert isinstance(result, dict) and "data" in result, f"{name} load fn {idx} bad result"
 
 
+def test_favicon_served_and_linked_everywhere(client):
+    """Site icon (Spec 2026-10-31 任務 2): the user-made assets/app_icon.png is
+    served at /assets/ and /favicon.ico, and linked from every page + root."""
+    from components.styles import FAVICON_HTML
+
+    icon = client.get("/assets/app_icon.png")
+    assert icon.status_code == 200 and icon.content[:8] == b"\x89PNG\r\n\x1a\n"
+    ico = client.get("/favicon.ico")
+    assert ico.status_code == 200 and ico.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+    assert FAVICON_HTML in ROOT_HTML  # 根頁是純 HTML，link 原樣可見
+    for name in PAGES:
+        idx = client.get(f"/{name}/", headers={"Accept": "text/html"}).text
+        # gradio 把 head= 內容放進鑲嵌 JSON（HTML 字元被轉義），所以比對路徑本體
+        assert "app_icon.png" in idx, f"favicon link missing on /{name}/"
+
+
+def test_per_page_titles_are_distinct(client):
+    """任務 2：三個模組頁各自有清楚的瀏覽器分頁標題，頁內 header 主標也模組化。"""
+    titles = {name: page.blocks.title for name, page in PAGES.items()}
+    assert "MiniMax-H3" in titles["minimax"]
+    assert "畫質放大" in titles["upscaler"]
+    assert "Strata" in titles["strata"]
+    assert len(set(titles.values())) == 3
+    up_cfg = json.dumps(client.get("/upscaler/config").json(), ensure_ascii=False)
+    st_cfg = json.dumps(client.get("/strata/config").json(), ensure_ascii=False)
+    assert "影片畫質放大系統" in up_cfg and "MiniMax-H3 影片生成系統" not in up_cfg
+    assert "Strata 智慧助理系統" in st_cfg and "MiniMax-H3 影片生成系統" not in st_cfg
+
+
+def test_maintenance_gate_hides_pages_from_non_admins(client):
+    """任務 7：UPDATING 期間非管理員只看到 header 維護橫幅，主體全部 hidden；
+    管理員（loopback）不受影響。直接重放 /upscaler 的 gate load fn（1 input→5 outputs）。"""
+    import asyncio
+    from starlette.requests import Request as StarReq
+    from gradio.state_holder import SessionState
+    from config import set_server_status, SERVER_STATUS_OK, SERVER_STATUS_UPDATING
+
+    def make_request(host):
+        return StarReq({
+            "type": "http", "method": "GET", "path": "/upscaler/",
+            "headers": [(b"host", b"127.0.0.1")], "query_string": b"",
+            "scheme": "http", "server": ("127.0.0.1", 7860), "client": (host, 1234),
+        })
+
+    blocks = PAGES["upscaler"].blocks
+    fns = blocks.fns.items() if isinstance(blocks.fns, dict) else list(enumerate(blocks.fns))
+    gate_idx = None
+    for idx, fn in fns:
+        if (any(len(t) > 1 and t[1] == "load" for t in (fn.targets or []))
+                and len(fn.inputs or []) == 1 and len(fn.outputs or []) == 5):
+            gate_idx = idx
+            break
+    assert gate_idx is not None, "maintenance-gate load fn not found on /upscaler"
+
+    try:
+        set_server_status(SERVER_STATUS_UPDATING)
+        res = asyncio.run(blocks.process_api(
+            gate_idx, ["dev_gate_lan"], SessionState(blocks),
+            request=make_request("10.99.99.99"), simple_format=True))
+        data = res["data"]
+        assert data[2].get("visible") is False, "module container must be hidden"
+        assert data[3].get("visible") is False, "toolbar row must be hidden"
+        assert data[4].get("visible") is False, "sidebar must be hidden"
+        assert "伺服器維護/更新中" in data[1], "header must show the maintenance banner"
+        assert data[0] == "dev_gate_lan", "existing device id must be kept as-is"
+
+        res_admin = asyncio.run(blocks.process_api(
+            gate_idx, ["dev_gate_lan"], SessionState(blocks),
+            request=make_request("127.0.0.1"), simple_format=True))
+        assert res_admin["data"][2].get("visible") is True
+        assert res_admin["data"][3].get("visible") is True
+        assert res_admin["data"][4].get("visible") is True
+    finally:
+        set_server_status(SERVER_STATUS_OK)
+
+
+def test_admin_prompt_editor_reflects_file_on_every_load(client):
+    """任務 3 bug 迴歸：管理員系統提示詞編輯器每次開頁都要從檔案重抓
+    （PAGE 是模組層單例，建置期快照會把已存檔的內容顯示成舊值）。"""
+    import asyncio
+    import os
+    import tempfile
+    from starlette.requests import Request as StarReq
+    from gradio.state_holder import SessionState
+    import core.director_builder as db
+
+    blocks = PAGES["minimax"].blocks
+    fns = blocks.fns.items() if isinstance(blocks.fns, dict) else list(enumerate(blocks.fns))
+    candidates = [idx for idx, fn in fns
+                  if any(len(t) > 1 and t[1] == "load" for t in (fn.targets or []))
+                  and not (fn.inputs or []) and len(fn.outputs or []) == 1]
+    assert candidates, "no 0-input/1-output load fn on /minimax"
+
+    req = StarReq({
+        "type": "http", "method": "GET", "path": "/minimax/",
+        "headers": [(b"host", b"127.0.0.1")], "query_string": b"",
+        "scheme": "http", "server": ("127.0.0.1", 7860), "client": ("127.0.0.1", 1234),
+    })
+
+    real_path = db.DIRECTOR_SYSTEM_PROMPT_PATH
+    tmp = tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8")
+    try:
+        tmp.write("第一版管理員提示詞")
+        tmp.close()
+        db.DIRECTOR_SYSTEM_PROMPT_PATH = tmp.name
+        db.invalidate_director_system_prompt_cache()
+
+        # 候選 load fn 有兩個：admin tab 可見性（回 visible）與提示詞重抓（回 value）；
+        # 用暫存檔內容把後者辨認出來
+        editor_idx, res1 = None, None
+        for idx in candidates:
+            r = asyncio.run(blocks.process_api(idx, [], SessionState(blocks), request=req, simple_format=True))
+            d0 = r["data"][0]
+            if isinstance(d0, dict) and d0.get("value") == "第一版管理員提示詞":
+                editor_idx, res1 = idx, r
+                break
+        assert editor_idx is not None, "prompt-editor reload load fn not found on /minimax"
+
+        # 管理員儲存（改檔）後重新整理 → load 必須重抓新內容，不是建置期快照
+        with open(tmp.name, "w", encoding="utf-8") as f:
+            f.write("存檔後第二版")
+        db.invalidate_director_system_prompt_cache()
+        res2 = asyncio.run(blocks.process_api(editor_idx, [], SessionState(blocks), request=req, simple_format=True))
+        assert res2["data"][0].get("value") == "存檔後第二版"
+    finally:
+        db.DIRECTOR_SYSTEM_PROMPT_PATH = real_path
+        db.invalidate_director_system_prompt_cache()
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
 def test_router_js_tab_map_is_valid_json_fragment():
     js = build_tab_router_js()
     # the injected table must be parseable JSON (double quotes, not python single)
