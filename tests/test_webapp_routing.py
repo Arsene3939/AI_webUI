@@ -60,6 +60,28 @@ def test_index_carries_css_theme_and_router_js(client):
         assert LAST_PAGE_STORAGE_KEY in idx, f"tab-router JS missing on /{name}/"
 
 
+def test_each_page_main_container_is_visible():
+    """Regression (2026-11-01): upscaler/strata views kept the old single-page
+    `Column(visible=False)` default (the radio switcher used to show them) —
+    as standalone pages their whole body rendered invisible."""
+    assert PAGES["minimax"].minimax_view.container.visible is True
+    assert PAGES["upscaler"].upscaler_view.container.visible is True
+    assert PAGES["strata"].strata_view.container.visible is True
+
+
+def test_page_configs_expose_their_primary_controls(client):
+    """The served config (what the browser renders) must actually contain each
+    page's headline component — a blank page can never hide behind a 200 again."""
+    wanted = {
+        "minimax": "開始生成",
+        "upscaler": "開始影片超解析放大",
+        "strata": "傳送",
+    }
+    for name, label in wanted.items():
+        cfg = json.dumps(client.get(f"/{name}/config").json(), ensure_ascii=False)
+        assert label in cfg, f"{label!r} missing from /{name} config payload"
+
+
 def test_tab_deeplinks_serve_module_index(client):
     for name, segments in TAB_SEGMENTS.items():
         for seg in segments:

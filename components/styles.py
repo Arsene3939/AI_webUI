@@ -400,6 +400,49 @@ window.triggerEditId = function() {
         }
     }
 };
+
+/* ---- 下拉選單「再點一次收起」補丁 ----
+   gradio 上游限制：Dropdown/Multiselect 展開後再按触发区不会收起
+   （只支援點外面或按 Esc 收合；见 GitHub gradio#3532 系列行為）。
+   本補丁偵測「選單已開著、這一下落在触发区（選單外）」的情况，在 gradio
+   自己的 click handler 跑完後，補發一發組件内建的 Escape 收合路徑
+   （已核對 6.30 前端 bundle：keydown Escape -> open=false）。
+   不 intercept、不 preventDefault，gradio 升級後若原生支援收合，本補丁
+   的「仍開著才補發」檢查會讓它自動失效。 */
+(function () {
+    function visibleListbox() {
+        var lbs = document.querySelectorAll('[role="listbox"]');
+        for (var i = 0; i < lbs.length; i++) {
+            if (lbs[i].getClientRects().length) return lbs[i];
+        }
+        return null;
+    }
+    document.addEventListener('click', function (ev) {
+        var lb = visibleListbox();
+        if (!lb || lb.contains(ev.target)) return;      // 沒開著／點的是選項 → 交給 gradio
+        var host = lb.parentElement || lb;              // 展開時 container 涵蓋 触发区+選單
+        var lbRect = lb.getBoundingClientRect();
+        var hitHeader = false;
+        var hostRects = host.getClientRects();
+        for (var i = 0; i < hostRects.length; i++) {
+            var r = hostRects[i];
+            var inHost = ev.clientX >= r.left && ev.clientX <= r.right &&
+                         ev.clientY >= r.top && ev.clientY <= r.bottom;
+            var inList = ev.clientX >= lbRect.left && ev.clientX <= lbRect.right &&
+                         ev.clientY >= lbRect.top && ev.clientY <= lbRect.bottom;
+            if (inHost && !inList) { hitHeader = true; break; }
+        }
+        if (!hitHeader) return;                          // 點框外 → gradio 點外面收合已處理
+        setTimeout(function () {
+            if (!visibleListbox()) return;               // gradio 自己收了就不插手
+            var target = document.activeElement || document.body;
+            var init = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27,
+                         bubbles: true, cancelable: true };
+            target.dispatchEvent(new KeyboardEvent('keydown', init));
+            target.dispatchEvent(new KeyboardEvent('keyup', init));
+        }, 0);
+    }, true);
+})();
 </script>
 """
 

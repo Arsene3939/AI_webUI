@@ -112,7 +112,10 @@ class UpscalerView(ComfyUIBaseView):
         model_choices = get_upscale_models()
         default_model = model_choices[0] if model_choices else "RealESRGAN_x4plus.safetensors"
 
-        with gr.Column(visible=False) as self.container:
+        # Routing refactor: this view is the whole content of the /upscaler page,
+        # so the container must be visible (the old single-page app hid it behind
+        # the radio-switched minimax view).
+        with gr.Column() as self.container:
             with gr.Tabs() as self.tabs:
                 with gr.Tab("🔍 影片超解析放大"):
                     gr.Markdown("### 🔍 影片超解析放大 (Video Resolution Upscaler)")

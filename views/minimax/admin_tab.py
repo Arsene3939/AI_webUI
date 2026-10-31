@@ -73,9 +73,9 @@ class MiniMaxAdminTab(ComfyUIAdminTab):
         """Binds task filtering, selection, and deletion event listeners."""
         for trigger in [self.device_filter.change, self.status_filter.change, self.refresh_all_tasks_btn.click]:
             trigger(
-                AdminManager.get_admin_tasks_dropdown_choices,
-                inputs=[self.device_filter, self.status_filter],
-                outputs=[self.all_tasks_dropdown],
+                AdminManager.apply_task_filter,
+                inputs=[self.device_filter, self.status_filter, self.all_tasks_dropdown],
+                outputs=[self.all_tasks_dropdown, self.device_filter],
             )
 
         self.all_tasks_dropdown.change(

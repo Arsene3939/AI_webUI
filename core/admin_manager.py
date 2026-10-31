@@ -357,6 +357,30 @@ class AdminManager:
         return choices
 
     @classmethod
+    def apply_task_filter(cls, device_filter: str = "全部裝置", status_filter: str = "全部狀態",
+                          current_task_id: str = None, request: gr.Request = None):
+        """
+        Filter-driven refresh of the「選取歷史任務」+「篩選裝置」dropdowns.
+        Returns (task_dropdown_update, device_filter_update). MUST be gr.update(choices=…)
+        (not the raw choices list — gradio reads a bare output as the dropdown's *value*,
+        which left the menu stuck on the original choices and raised
+        "'…' is not in the list of choices" for the tuple-list value. Bug 2026-11-01.)
+        - task value stays put when it survives the filter, else snaps to the first
+          valid choice (never outside `choices`).
+        - device choices are re-scanned on every apply so devices created after the
+          page was built show up without a page reload (second output).
+        """
+        if not cls.is_super_user(request):
+            return gr.update(), gr.update()
+        choices = cls.get_admin_tasks_dropdown_choices(device_filter, status_filter)
+        ids = [c[1] for c in choices]
+        new_value = current_task_id if current_task_id in ids else ids[0]
+
+        dev_choices = cls.get_admin_device_filter_choices()
+        dev_value = device_filter if device_filter in dev_choices else "全部裝置"
+        return gr.update(choices=choices, value=new_value), gr.update(choices=dev_choices, value=dev_value)
+
+    @classmethod
     def on_toggle_server_status(cls, request: gr.Request = None):
         if not cls.is_super_user(request):
             return gr.update(), gr.update(), "⚠️ 權限不足，僅限本機管理員操作"
@@ -478,4 +502,6 @@ class AdminManager:
         choices = cls.get_admin_tasks_dropdown_choices(device_filter, status_filter)
         dev_choices = cls.get_admin_device_filter_choices()
         msg = f"🧹 已清除 {count} 個失敗或中斷的任務"
-        return gr.update(choices=choices, value=""), None, msg, gr.update(choices=dev_choices)
+        # value must stay inside choices (empty-list case = placeholder with value ""),
+        # otherwise gradio rejects the selection with "not in the list of choices".
+        return gr.update(choices=choices, value=choices[0][1]), None, msg, gr.update(choices=dev_choices)

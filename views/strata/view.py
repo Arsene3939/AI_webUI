@@ -29,7 +29,8 @@ class StrataView(BaseView):
         self.admin_tab = StrataAdminTab()
 
     def render(self, session_ctx: Any) -> gr.Column:
-        with gr.Column(visible=False) as self.container:
+        # Routing refactor: view is the whole content of the /strata page (visible).
+        with gr.Column() as self.container:
             with gr.Tabs() as self.tabs:
                 with gr.Tab("💬 智慧對話助理"):
                     gr.Markdown("### 💬 Strata: Qwen3.8-flash-next 智慧助理")

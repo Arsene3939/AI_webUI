@@ -184,3 +184,20 @@ URL：
 > 2. **log 噪音**：uvicorn 存取日誌（每個 0.5s 輪詢都印一行 HTTP response）已在
 >    `launch_webui` 兩條路徑與 dev-reload 全部 `access_log=False` 關閉；
 >    現在只留啟動、重載與錯誤訊息。
+>
+> **修復記錄（2026-11-01，使用者回報：管理員篩選 bug＋下拉選單收合）**
+> 1. **Super User「選取歷史任務」篩選無效＋not-in-choices 錯誤**：篩選觸發直接掛
+>    `get_admin_tasks_dropdown_choices`（回傳裸 choices 清單）。gradio 把單輸出的裸回傳
+>    當成 dropdown 的 **value**，不是 choices → 選單永遠不更新、value 變成清單物件而炸
+>    "is not in the list of choices"。新增 `AdminManager.apply_task_filter`：回傳
+>    `(gr.update(choices=…, value=…), gr.update(裝置選單))`，value 永遠落在 choices 內
+>    （保留現選、否則 snap 第一筆）；順帶修 `on_clean_failed_tasks` 的 `value=""` 同型地雷，
+>    並讓**裝置篩選選單**每次套用篩選時重掃（新裝置不用再重新整理頁面才看得到）。
+>    防回歸：`test_admin_tabs.TestAdminTaskFilter` 5 測＋實戰 server 走 gradio_client
+>    打 `/apply_task_filter` 驗證（狀態篩選／裝置篩選精確匹配／value 合法性全 PASS）。
+> 2. **下拉選單再點一次不收合**：查證為 gradio 上游行為（GitHub gradio#3532 系列；
+>    官方收合路徑只有點外面與 Esc，bundle 內 `keydown Escape -> open=false` 已核對）。
+>    於 `CUSTOM_HEAD_JS` 加補丁：capture-click 偵測「選單開著且這一下落在觸發區」→
+>    gradio handler 跑完後補發一發 Escape（仍開著才補，gradio 原生修好後自動失效）。
+>    ⚠️ 需用浏览器實測確認手感；無頭環境無法驗證 DOM 互動。
+>    連帶發現並清除了 spike 驗證殘留於真實 task_history 的測試任務（零殘留原則）。
