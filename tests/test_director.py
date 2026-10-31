@@ -54,11 +54,36 @@ class TestDirectorGraph:
         assert g["2"]["inputs"]["image"] == "in/upload.png"
         assert g["9"]["inputs"]["image"] == ["2", 0]
 
-    def test_language_switch_selects_persona(self):
-        g_en = build_director_workflow(brief="walk", clip_name="m.safetensors", language="en")
-        assert "Film Director" in g_en["9"]["inputs"]["prompt"]
-        g_zh = build_director_workflow(brief="walk", clip_name="m.safetensors", language="zh_en")
-        assert "影片導演" in g_zh["9"]["inputs"]["prompt"]
+    def test_unified_system_prompt_loaded_from_external_file(self, tmp_path, monkeypatch):
+        import core.director_builder as db
+        p = tmp_path / "prompt.md"
+        p.write_text("你是測試導演 PROXY-PROMPT", encoding="utf-8")
+        monkeypatch.setattr(db, "DIRECTOR_SYSTEM_PROMPT_PATH", str(p))
+        db.invalidate_director_system_prompt_cache()
+        g = build_director_workflow(brief="walk", clip_name="m.safetensors")
+        assert "PROXY-PROMPT" in g["9"]["inputs"]["prompt"]
+        assert "【使用者提示詞草稿】" in g["9"]["inputs"]["prompt"] and "walk" in g["9"]["inputs"]["prompt"]
+        db.invalidate_director_system_prompt_cache()
+
+    def test_missing_prompt_file_falls_back_to_embedded_default(self, tmp_path, monkeypatch):
+        import core.director_builder as db
+        monkeypatch.setattr(db, "DIRECTOR_SYSTEM_PROMPT_PATH", str(tmp_path / "nope.md"))
+        db.invalidate_director_system_prompt_cache()
+        assert db.load_director_system_prompt() == db.DEFAULT_DIRECTOR_SYSTEM_PROMPT
+        db.invalidate_director_system_prompt_cache()
+
+    def test_admin_save_roundtrip_and_cache_invalidation(self, tmp_path, monkeypatch):
+        import core.director_builder as db
+        p = tmp_path / "sub" / "prompt.md"  # 目錄不存在也要自動建立
+        monkeypatch.setattr(db, "DIRECTOR_SYSTEM_PROMPT_PATH", str(p))
+        db.invalidate_director_system_prompt_cache()
+        ok, msg = db.save_director_system_prompt("  新導演指示 v2  ")
+        assert ok
+        assert p.read_text(encoding="utf-8").strip() == "新導演指示 v2"
+        assert db.load_director_system_prompt() == "新導演指示 v2"  # 存檔即生效
+        ok2, msg2 = db.save_director_system_prompt("   ")
+        assert not ok2 and "不能為空" in msg2
+        db.invalidate_director_system_prompt_cache()
 
     def test_graph_is_json_serializable(self):
         json.dumps(build_director_workflow(brief="x", clip_name="m.safetensors", image_filename="f"))
@@ -111,37 +136,36 @@ class TestDirectorModelAutoRefresh:
     def test_no_change_is_fully_noop(self, monkeypatch):
         db = self._scan(monkeypatch, ["qwen3vl_8b_nvfp4.safetensors"])
         seen = ["qwen3vl_8b_nvfp4.safetensors"]
-        d, out, st, state = db.refresh_model_choices("qwen3vl_8b_nvfp4.safetensors", seen)
+        d, st, state = db.refresh_model_choices("qwen3vl_8b_nvfp4.safetensors", seen)
         assert "choices" not in d and "value" not in d and "interactive" not in d
-        assert "visible" not in out
         assert "value" not in st
         assert state is seen  # scan state untouched → no churn
 
     def test_empty_to_empty_also_noop(self, monkeypatch):
         db = self._scan(monkeypatch, [])
-        d, out, st, state = db.refresh_model_choices(None, [])
-        assert "choices" not in d and state == []
+        d, st, state = db.refresh_model_choices(None, [])
+        assert "choices" not in d and "value" not in st and state == []
 
     def test_new_model_appears_without_restart(self, monkeypatch):
         db = self._scan(monkeypatch, ["qwen3vl_8b_nvfp4.safetensors"])
-        d, out, st, state = db.refresh_model_choices(None, [])
+        d, st, state = db.refresh_model_choices(None, [])
         assert d["choices"] == ["qwen3vl_8b_nvfp4.safetensors"]
         assert d["value"] == "qwen3vl_8b_nvfp4.safetensors" and d["interactive"] is True
-        assert out["visible"] is True and st == ""
+        assert st["value"] == ""  # 就緒 → 清掉「未就緒」狀態行
         assert state == ["qwen3vl_8b_nvfp4.safetensors"]
 
     def test_user_selection_survives_scan(self, monkeypatch):
         db = self._scan(monkeypatch, ["qwen3vl_8b_nvfp4.safetensors", "qwen3vl_4b_fp8_scaled.safetensors"])
-        d, _, _, _ = db.refresh_model_choices(
+        d, _, _ = db.refresh_model_choices(
             "qwen3vl_4b_fp8_scaled.safetensors", ["qwen3vl_8b_nvfp4.safetensors"]
         )
         assert d["value"] == "qwen3vl_4b_fp8_scaled.safetensors"  # 不被預設值蓋掉
 
     def test_model_removal_returns_to_not_ready(self, monkeypatch):
         db = self._scan(monkeypatch, [])
-        d, out, st, state = db.refresh_model_choices("qwen3vl_8b_nvfp4.safetensors", ["qwen3vl_8b_nvfp4.safetensors"])
+        d, st, state = db.refresh_model_choices("qwen3vl_8b_nvfp4.safetensors", ["qwen3vl_8b_nvfp4.safetensors"])
         assert d["value"] is None and d["interactive"] is False
-        assert out["visible"] is False and db.NOT_READY in st
+        assert db.NOT_READY in st["value"]
         assert state == []
 
 

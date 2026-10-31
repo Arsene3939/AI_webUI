@@ -10,42 +10,71 @@ H3's own qwen3vl_32b_minimax_h3 encoder is intentionally NOT usable here:
 it is a 50/64-layer truncated conditioning checkpoint with no lm_head and
 therefore cannot decode text (see llama.py Qwen3VL_32BConfig).
 """
-from typing import Optional
+import os
+from typing import Optional, Tuple
 
-from config import DIRECTOR_CLIP_TYPE, DIRECTOR_CLIP_DEVICE
+from config import DIRECTOR_CLIP_TYPE, DIRECTOR_CLIP_DEVICE, DIRECTOR_SYSTEM_PROMPT_PATH
 
-# Director personas. The model receives: [system persona] + user brief (+ image).
-# Output contract is enforced in-text so the UI can split/explain cheaply.
-DIRECTOR_SYSTEM_ZH_EN = """你現在是「影片導演」，替本地端無審查影片模型 MiniMax-H3 撰寫生成提示詞。
-任務：仔細觀察附上的圖片（首幀），融合使用者的口語需求，產出一段可直接使用的英文生成提示詞。
-規則：
-- 描述具體的畫面動態、角色動作、鏡頭運動、光線與氛圍；用現在進行式英文。
-- 只描述畫面與聲音，不描述 smell/taste/touch；不使用夸张形容詞；不編造使用者沒要求的角色或對白。
-- 使用者需求與圖片衝突時，以使用者需求為主，但維持與圖片的視覺連續性。
-- 嚴格輸出格式（兩行開始）：
-第一行以「【導演筆記】」開頭，用一句不超過 25 個字的中文說明你的導演思路。
-第二行起以「【English Prompt】」開頭，接著 ONLY 一段連貫的英文提示詞（單一段落，無條列、無換行標題）。
-不要輸出其他任何內容，不要提問。"""
+# Unified system prompt (Spec 2026-10-31 UI 簡化案：不再挑輸出語言/風格，
+# 不再要求雙段格式). The live copy lives in utils/director_system_prompt.md and is
+# editable by admins in the 管理員專區; this embedded copy is the safe fallback
+# used only when the file is missing or empty.
+DEFAULT_DIRECTOR_SYSTEM_PROMPT = """你是一位经验丰富的影片导演，负责把使用者写的「提示词草稿」打磨成一段可以直接交给 AI 影片生成模型的成品提示词。
+你会收到：使用者的提示词草稿（可能很简短、口语化），若附有图片，那是影片的第一帧画面。
+任务：仔细观察图片（若有）；完整保留草稿已指定的内容且一字不改其原意；在不改原意的前提下补全影片模型需要的具体细节：主体的动作与表情、镜头运动、光线的方向与变化、场景氛围、以及画面中应有的环境声音；以时间顺序描述画面将如何动起来。
+硬性规则：绝不添加使用者没有要求的角色、台词或剧情转折；只描述看得到的画面与听得到的声音，不描述气味味道触感；用词自然具体不夸张；不写时间码与「场景开始于」之类开场白；不用条列或标题；不提问、不解释、不复述要求。
+输出格式（严格遵守）：只输出成品提示词本身，单独一个连续段落，没有前后缀引言或 Markdown；语言不拘（影片模型对英文的理解最稳定）；长度约 150 字（或 80 个英文单字）以内。"""
 
-DIRECTOR_SYSTEM_EN = """You are the "Film Director" writing prompts for the local uncensored video model MiniMax-H3.
-Study the attached image (first frame) and fuse it with the user's casual request into ONE ready-to-use English prompt.
-Rules:
-- Concrete motion, character action, camera movement, lighting, mood; present-progressive English.
-- Visuals and audio only; no invented characters or dialogue the user did not ask for.
-- If the request conflicts with the image, follow the user but keep visual continuity.
-- STRICT format: first line starts with "【Director Note】" plus one short Traditional-Chinese sentence (max 25 chars) explaining your direction. Second line starts with "【English Prompt】" followed by ONLY one coherent English paragraph. Nothing else. Never ask questions."""
+# (path, mtime) -> text cache; admin saves flip mtime -> next generation reloads.
+_prompt_cache: Tuple[str, float, str] = ("", -1.0, "")
 
-LANGUAGE_SYSTEMS = {
-    "zh_en": DIRECTOR_SYSTEM_ZH_EN,
-    "en": DIRECTOR_SYSTEM_EN,
-}
+
+def load_director_system_prompt() -> str:
+    """Reads the external system prompt (mtime-cached); falls back to the
+    embedded default when the file is missing/blank."""
+    global _prompt_cache
+    path = DIRECTOR_SYSTEM_PROMPT_PATH
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return DEFAULT_DIRECTOR_SYSTEM_PROMPT
+    if _prompt_cache[0] == path and _prompt_cache[1] == mtime:
+        cached = _prompt_cache[2]
+    else:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                cached = f.read().strip()
+        except OSError:
+            return DEFAULT_DIRECTOR_SYSTEM_PROMPT
+        _prompt_cache = (path, mtime, cached)
+    return cached or DEFAULT_DIRECTOR_SYSTEM_PROMPT
+
+
+def invalidate_director_system_prompt_cache() -> None:
+    global _prompt_cache
+    _prompt_cache = ("", -1.0, "")
+
+
+def save_director_system_prompt(text: str) -> Tuple[bool, str]:
+    """Admin-side save (管理員專區). Writes the external file and resets the
+    cache so the next director call picks the new prompt up immediately."""
+    text = (text or "").strip()
+    if not text:
+        return False, "系統提示詞不能為空"
+    try:
+        os.makedirs(os.path.dirname(DIRECTOR_SYSTEM_PROMPT_PATH), exist_ok=True)
+        with open(DIRECTOR_SYSTEM_PROMPT_PATH, "w", encoding="utf-8") as f:
+            f.write(text + "\n")
+    except OSError as e:
+        return False, f"儲存失敗：{e}"
+    invalidate_director_system_prompt_cache()
+    return True, f"已儲存（{len(text)} 字），下一次生成立即生效"
 
 
 def build_director_workflow(
     brief: str,
     clip_name: str,
     image_filename: Optional[str] = None,
-    language: str = "zh_en",
     temperature: float = 0.7,
     top_p: float = 0.95,
     seed: int = 0,
@@ -54,9 +83,10 @@ def build_director_workflow(
     """
     Assembles the API-format graph. `image_filename` must already be uploaded
     to the ComfyUI input folder (upload_media_file) when provided.
+    `brief` is the user's draft prompt read live from the tab's 提示詞 field.
     """
-    system = LANGUAGE_SYSTEMS.get(language, DIRECTOR_SYSTEM_ZH_EN)
-    user_prompt = f"{system}\n\n使用者需求：{brief.strip()}" if brief.strip() else system
+    system = load_director_system_prompt()
+    user_prompt = f"{system}\n\n---\n【使用者提示詞草稿】\n{brief.strip()}" if brief.strip() else system
 
     graph = {
         "1": {

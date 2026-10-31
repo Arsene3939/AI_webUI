@@ -179,6 +179,7 @@ class I2VTab:
             default_duration=2.0,
             default_steps=20,
             default_fps=24,
+            include_director_model=True,  # 導演模型下拉進「⚙️ 進階參數」
         )
         self.action_btns = ActionButtonsComponent(generate_label="🚀 開始生成影片")
         self.player_card = VideoPlayerCardComponent(label="生成影片")
@@ -208,8 +209,9 @@ class I2VTab:
 
     def register_events(self, session_task_state: gr.BrowserState, device_id_state: gr.BrowserState, on_completed_cb=None):
         self.params_card.register_events(image_ref=self.first_frame)
-        # 影片導演：吃本 tab 的首幀當參考圖，成品套用到本 tab 的提示詞欄
-        self.director.register_events(self.first_frame, self.prompt)
+        # 優化提示詞：吃本 tab 的首幀當參考圖，草稿與成品都進出本 tab 的提示詞欄；
+        # 導演模型選單住在本 tab 參數卡的「⚙️ 進階參數」裡
+        self.director.register_events(self.first_frame, self.prompt, self.params_card.director_model)
         self.first_frame.change(
             on_first_frame_change,
             inputs=[self.first_frame, self.params_card.quality_level],

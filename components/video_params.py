@@ -8,6 +8,7 @@ from typing import List, Optional, Tuple, Any
 from PIL import Image
 import gradio as gr
 from config import (
+    get_director_models,
     ORIGINAL_RATIO_LABEL,
     I2V_ASPECT_RATIOS,
     T2V_ASPECT_RATIOS,
@@ -64,7 +65,11 @@ class VideoParamsComponent:
         default_duration: float = 2.0,
         default_steps: int = 20,
         default_fps: int = 24,
+        include_director_model: bool = False,
     ):
+        # 導演模型下拉收在「⚙️ 進階參數」裡（Spec 2026-10-31 UI 簡化案）：
+        # 只有挂了導演區塊的 tab（I2V）開旗標，其他 tab 不會憑空多出一個用不到的欄位。
+        self.include_director_model = include_director_model
         self.aspect_ratio_choices = aspect_ratio_choices
         self.default_aspect_ratio = default_aspect_ratio
         self.default_quality = default_quality
@@ -83,6 +88,7 @@ class VideoParamsComponent:
         self.denoise: Optional[gr.Slider] = None
         self.sampler: Optional[gr.Dropdown] = None
         self.scheduler: Optional[gr.Dropdown] = None
+        self.director_model: Optional[gr.Dropdown] = None
 
     def render(self) -> "VideoParamsComponent":
         # Row 1: Aspect Ratio, Quality Level
@@ -132,6 +138,18 @@ class VideoParamsComponent:
             with gr.Row():
                 self.sampler = gr.Dropdown(choices=SAMPLER_CHOICES, value="res_multistep", label="取樣器", filterable=False)
                 self.scheduler = gr.Dropdown(choices=SCHEDULER_CHOICES, value="simple", label="調度器", filterable=False)
+            if self.include_director_model:
+                director_models = get_director_models()
+                with gr.Row():
+                    self.director_model = gr.Dropdown(
+                        choices=director_models,
+                        value=(director_models[0] if director_models else None),
+                        label="導演模型",
+                        info="「優化提示詞」按鈕使用的導演模型；放好新模型後清單會自動更新",
+                        filterable=False,
+                        interactive=bool(director_models),
+                        allow_custom_value=False,
+                    )
 
         return self
 

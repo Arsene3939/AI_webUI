@@ -523,6 +523,12 @@ DIRECTOR_CLIP_DEVICE = os.environ.get("DIRECTOR_CLIP_DEVICE", "default")
 DEFAULT_DIRECTOR_MODEL = os.environ.get("DIRECTOR_MODEL", "qwen3vl_8b_nvfp4.safetensors")
 DIRECTOR_TIMEOUT_SECONDS = int(os.environ.get("DIRECTOR_TIMEOUT_SECONDS", "300"))
 DIRECTOR_EXCLUDE_KEYWORDS = ("minimax",)
+# 導演系統提示詞的外部檔案（管理員可在管理員專區直接編輯；缺失/空時
+# director_builder 會退回內嵌預設版）。mtime 快取：存檔後下次生成立即生效。
+DIRECTOR_SYSTEM_PROMPT_PATH = os.environ.get(
+    "DIRECTOR_SYSTEM_PROMPT_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils", "director_system_prompt.md"),
+)
 
 
 def get_director_models(models_dir: Optional[str] = None) -> List[str]:

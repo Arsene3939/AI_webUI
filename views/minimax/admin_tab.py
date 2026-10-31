@@ -6,6 +6,8 @@ from typing import Optional, Any
 import gradio as gr
 from core.comfy_admin_tab import ComfyUIAdminTab
 from core.admin_manager import AdminManager
+from core.director_builder import load_director_system_prompt, save_director_system_prompt
+from components.director_block import warn_html
 
 
 class MiniMaxAdminTab(ComfyUIAdminTab):
@@ -27,6 +29,10 @@ class MiniMaxAdminTab(ComfyUIAdminTab):
         self.delete_task_btn: Optional[gr.Button] = None
         self.video_preview: Optional[gr.Video] = None
         self.task_detail: Optional[gr.Markdown] = None
+        self.director_prompt_editor: Optional[gr.Textbox] = None
+        self.director_prompt_reload_btn: Optional[gr.Button] = None
+        self.director_prompt_save_btn: Optional[gr.Button] = None
+        self.director_prompt_status: Optional[gr.HTML] = None
 
     def render_comfy_content(self, session_ctx: Any) -> None:
         """Injects cross-device task history management specific to MiniMax-H3."""
@@ -69,6 +75,18 @@ class MiniMaxAdminTab(ComfyUIAdminTab):
             with gr.Column(scale=1):
                 self.task_detail = gr.Markdown("請從上方選取任務檢視詳細參數")
 
+        # 導演系統提示詞維護區（admin tab 本身已是 Super User 限定，不需再另外門控）
+        gr.Markdown("### 🎬 導演系統提示詞")
+        self.director_prompt_editor = gr.Textbox(
+            value=load_director_system_prompt(),
+            label="每次「優化提示詞」導演所遵循的指示（直接編輯後儲存，下一次生成立即生效）",
+            lines=14,
+        )
+        with gr.Row():
+            self.director_prompt_reload_btn = gr.Button("↺ 從檔案重新載入", variant="secondary", scale=1)
+            self.director_prompt_save_btn = gr.Button("💾 儲存系統提示詞", variant="primary", scale=1)
+        self.director_prompt_status = gr.HTML("", elem_classes=["backend-status-box"])
+
     def register_comfy_events(self, session_ctx: Any) -> None:
         """Binds task filtering, selection, and deletion event listeners."""
         for trigger in [self.device_filter.change, self.status_filter.change, self.refresh_all_tasks_btn.click]:
@@ -92,4 +110,29 @@ class MiniMaxAdminTab(ComfyUIAdminTab):
             AdminManager.on_clean_failed_tasks,
             inputs=[self.device_filter, self.status_filter],
             outputs=[self.all_tasks_dropdown, self.video_preview, self.task_detail, self.device_filter],
+        )
+
+        # ---- 導演系統提示詞：載入 / 儲存 ----
+        def reload_prompt_from_file():
+            return (
+                gr.update(value=load_director_system_prompt()),
+                '<div class="director-ok">✅ 已從檔案載入最新內容</div>',
+            )
+
+        def save_prompt(text):
+            ok, msg = save_director_system_prompt(text)
+            if ok:
+                return f'<div class="director-ok">✅ {msg}</div>'
+            return warn_html(msg)
+
+        self.director_prompt_reload_btn.click(
+            reload_prompt_from_file,
+            outputs=[self.director_prompt_editor, self.director_prompt_status],
+            api_name=False,
+        )
+        self.director_prompt_save_btn.click(
+            save_prompt,
+            inputs=[self.director_prompt_editor],
+            outputs=[self.director_prompt_status],
+            api_name=False,
         )

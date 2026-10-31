@@ -82,6 +82,20 @@ def test_page_configs_expose_their_primary_controls(client):
         assert label in cfg, f"{label!r} missing from /{name} config payload"
 
 
+def test_director_ui_simplification_markers(client):
+    """UI 簡化案（2026-10-31）：minimax 頁有「優化提示詞」按鈕＋進階參數區的導演模型
+    下拉＋admin 區的導演系統提示詞編輯；舊的語言/進階摺疊不得復活；
+    其他模組頁不得憑空多出導演欄位。"""
+    mm = json.dumps(client.get("/minimax/config").json(), ensure_ascii=False)
+    assert "優化提示詞" in mm
+    assert "導演模型" in mm
+    assert "導演系統提示詞" in mm
+    assert "進階設定（導演模型／輸出語言）" not in mm  # 舊語言選單摺疊區
+    for name in ("upscaler", "strata"):
+        cfg = json.dumps(client.get(f"/{name}/config").json(), ensure_ascii=False)
+        assert "導演模型" not in cfg and "優化提示詞" not in cfg
+
+
 def test_tab_deeplinks_serve_module_index(client):
     for name, segments in TAB_SEGMENTS.items():
         for seg in segments:

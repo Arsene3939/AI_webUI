@@ -21,135 +21,64 @@
 
 # 接下來要執行的任務與詳細規劃：
 
-## 1. 新增"影片導演"
-用一個具有視覺能力的多模態模型(VLM)，作為影片導演，根據輸入圖片與我們口語簡單的需求，轉成專業且描述詳細的提示詞給minimax h3生成
-- 這個VLM必須跟minimax h3一样是無審查的模型，而且要同樣能跑在comfy後端
-- 規劃1. 可用的模型選擇
-- 規劃2. UI設計
-- 其他規劃
+## 1. 優化電影導演相關UI
+- 導演模型選擇直接移到跟隨機種子、去噪程度那邊的進階參數設定
+- 不挑導演生成語言或風格，使用統一系統提示詞(見2.)
+- 導演相關的進階設定全部移除(照上面兩點做完之後這邊的進階設定已經沒有東西了)
+- 按鈕的prompt text改成 "優化提示詞"
+- 按下"優化提示詞"之後直接讀取原本的"提示詞"欄位中使用者輸入的內容讓導演思考
+- 導演思考時顯示"導演努力思考中..."提示
+- 生成完成後，顯示"提示詞優化完成，原提示詞：<原提示詞>" 的提示
+- 其他狀態提示可自由發揮
+## 2. 導演系統提示詞的設定
+- 完整提示詞在utils/director_system_prompt.md (路徑與檔名暫定，你比較熟專案架構，給你決定檔名跟路徑)
+- 管理員可以調整導演系統提示詞(跟director_system_prompt.md同步改動)
+## 3. 修改utils/director_system_prompt.md的內容，修掉一些不合時宜的句子或描述，確保系統提示詞乾淨。
 
-> **狀態：程式端＋模型安裝全部完成（2026-10-31）；接線格式已對官方範本工作流逐一核對實測通過，
-> 實際推論完成度取決於執行當下显存/RAM 是否被常駐程式（strata=本地 LLM）挤占，
-> 乾淨環境下用 `tools/director_selftest.py` 一條指令即可最終驗收。**
->
-> **施工紀錄（2026-11-01）**
-> - **方案 A（重用 H3 自帶 qwen3vl_32b_minimax_h3）已證實不可行**：ComfyUI `comfy/text_encoders/llama.py`
->   `Qwen3VL_32BConfig` 註解與欄位證實該 checkpoint 是「64 層截到 50 層、`lm_head=False`、`final_norm=False`」
->   的 conditioning 檔案（只出 embedding、無生成頭）→ 物理上無法生成文字。已从導演模型掃描名單中永久排除。
-> - **已上線的程式端實作**（全部走 core 節點、無 custom node）：
->   `config.get_director_models()`（掃 text_encoders 的 qwen3vl* 並排除 minimax 截斷版）、
->   `core/director_builder.py`（CLIPLoader+LoadImage+TextGenerate 三節點 graph、中英導演人格、輸出雙段格式
->   【導演筆記】/【English Prompt】與容錯解析）、`core/director_client.py`（上傳/送件/輪詢 history 取文字、
->   結果快取、各種失敗皆回友善中文不拋錯）、`components/director_block.py`（摺疊導演區塊，模型/語言收在
->   進階設定）、已接入 **I2V tab**（吃本 tab 首幀、成品一鍵套用提示詞）。
->   測試：`tests/test_director.py` 18 項；全量 **189 綠**；minimax/upscaler e2e 全綠。
-> - **模型選用（2026-10-31，依使用者硬體 RTX 5070 12GB + 96GB RAM 拍板）**：
->   - **主選 `qwen3vl_8b_nvfp4.safetensors`（6.3GB）**——RTX 50 系 Blackwell 有**原生 FP4 張量核心**，
->     NVFP4 格式在 5070 上是「體積最小＋解碼最快」的 8B 版本；權重 ~5.9GB + vision + KV ≈ 7-8GB peak，
->     12GB 在空機（关掉其他佔显存的程式）時可全速跑。
->   - **備援 `qwen3vl_4b_fp8_scaled.safetensors`（4.9GB）**——給显存吃緊/要和其他程式共存時的下檔選項，
->     兩檔都會進進階設定的模型下拉選單。
->   - 下載來源：ModelScope `Comfy-Org/Qwen3-VL`（HF 直連不通時的鏡像，已驗證 200 可連）。
->   - **不需要安裝任何 custom node**：導演走的 `CLIPLoader + LoadImage + TextGenerate` 三個節點
->     全部內建於 ComfyUI-Desktop 0.30.1 core（已在執行中的後端 `/object_info` 實測確認：
->     `joyimage` 在 CLIPLoader type 清單內、TextGenerate schema 與 builder 欄位逐一對上）。
->   - **模型清單免重啟**：`DirectorBlockComponent` 內建 5 秒定時重掃目錄，只有清單真的變化時
->     才刷新下拉選單/成品框可見度/狀態行（`refresh_model_choices`，含 5 項回歸測試）。
->   - **显存放置可調**：`config.DIRECTOR_CLIP_DEVICE`（env 可覆寫；"default"=交給 ComfyUI 显存管理、
->     "cpu"=完全不佔显存的保底）。⚠ CPU 模式請搭配 **bf16** 版模型（fp8/fp16 的 CPU matmul 在
->     Desktop 版 torch 會原生崩潰）：`qwen3vl_4b_bf16.safetensors`（8.9GB）已一併下載。
->     本機注意：`strata` 常駐程式（＝本地 LLM 服務）會佔走大部分 12GB 显存與 ~60GB RAM，
->     要跑導演/影片生成前需先關閉它；導演撞到 OOM 時 UI 會給出「显存不夠…關程式或改小模型」的可操作提示。
->   - **下拉選單現況**：掃描結果依序為 `qwen3vl_8b_nvfp4`（主選，Blackwell 原生 FP4）→
->     `qwen3vl_4b_bf16`（CPU 保底）→ `qwen3vl_4b_fp8_scaled`（GPU 輕量）。
-> - **live spike 結果（2026-10-31，使用者提供官方範本工作流 `user/default/workflows/llm_qwen3vl_text_gen.json` 對照）**：
->   - **(a) 載入＝通過**：`CLIPLoader type=ideogram4`（官方範本對 standalone qwen3vl 檔用的 type，
->     `DIRECTOR_CLIP_TYPE` 已照官方預設改掉）實測 `Qwen3VLTEModel_ loaded completely; 4999.47 MB, full load: True`。
->     先前 joyimage 也能載，但官方範本是 ideogram4 → 以官方為準。
->   - **(b) 送件格式＝通過（關鍵收斂）**：`TextGenerate` 的 DynamicCombo 在 API graph 的正確序列化是
->     「`"sampling_mode": "on"` ＋ 子欄位用點分鍵 `sampling_mode.top_k / .temperature / ...`」
->     （官方範本的 input 名稱直接印證；option-dict 巢狀與平級展開都會被 0.30.1 驗證端打回或把參數丟掉）。
->     結尾必須接 `PreviewAny`（TextGenerate 非輸出節點，graph 無輸出會被 `prompt_no_outputs` 拒絕；
->     PreviewAny 把文字以 `{"text":[…]}` 寫進 /history，零檔案落盤）。以上已鏡像進 `director_builder` 並有測試封鎖。
->   - **(c) 推論完成度＝受環境資源限制**：送件、載入、tokenize、開始生成全部抵達；
->     `device=cpu` 時在 fp16 CPU matmul 原生崩潰（Desktop 版 torch 的 fp8→fp16 CPU 路徑不良）、
->     `--lowvram` 下則 `bad allocation`（當時 strata 常駐已吃走 ~58GB RAM + 絕大部分 12GB VRAM）。
->     **不是接線問題**：乾淨環境（关掉 strata 等佔显存程式）下 8B nvfp4 全速跑；
->     strata 開著時可用 `--device cpu` 搭配 **`qwen3vl_4b_bf16.safetensors`（已下載）**
->     ——bf16 純 CPU matmul 不會觸發 fp16 崩潰路徑（注意：此點仍待干净環境外的自我驗證收尾）。
->   - **收尾工具**：`tools/director_selftest.py`（走與網頁按鈕完全相同的 `call_director` 路徑，
->     `--model/--device/--image` 可選；綠 = 網頁導演也綠）。
->   - **測試**：單元 195 綠（含 DynamicCombo 點分鍵、PreviewAny 結尾、模型掃描/自動刷新、OOM 友善訊息）；
->     minimax／upscaler e2e 全綠零殘留。
-> - **審查性提醒**：Comfy-Org 的 Qwen3-VL 為原版 Instruct（有安全對齊），敏感需求可能被改寫；
->   若要完全無審查導演，後續再走 ComfyUI-QwenVL custom node ＋ abliterated Qwen2.5-VL（方案 B+）。
-> - **下輪候選**：R2V/T2V tab 接入導演區塊、e2e 加導演步驟（mock 後端回固定文字）、live spike 收斂參數。
+### 施工規畫（2026-10-31，依上面三項任務）
 
-### 規劃 1. 可用的模型選擇
+**任務1：導演UI極簡化**
+- `DirectorBlockComponent` 瘦身：只剩「✨ 優化提示詞」按鈕＋狀態行（Accordion/需求欄/成品欄/套用钮/語言下拉/進階摺疊全移除）。
+  不再多一層摺疊：按鈕直接位於提示詞欄正下方，一點即作。
+- 输入來源改為**本頁「提示詞」欄現值**（空欄→友善提示「先在提示詞欄寫下想法…」）；參考圖沿用本 tab 首幀（I2V）。
+- 導演模型下拉搬到 `VideoParamsComponent` 的「⚙️ 進階參數」Accordion 內（隨機種子/去噪強度那一區），
+  以 `include_director_model=True` 旗標只在 I2V 的參數卡出現（其他 tab 不憑空多出一個用不到的欄位）。
+- 狀態文案照使用者指定：思考中＝「導演努力思考中…」；完成＝「提示詞優化完成，原提示詞：<原提示詞>」
+  （原文 HTML 跳脫顯示；成品直接覆寫回提示詞欄，可再手動改）。
+- 模型清單 5 秒定時重掃（免重啟）保留：Timer 仍在導演區塊，但刷新目標改指進階參數區的模型下拉。
 
-**硬性條件**：本地端、無審查（或可移除審查）、能在 ComfyUI 後端執行（與 MiniMax-H3 共用同一個 ComfyUI-Desktop 实例）。
+**任務2：導演系統提示詞外部化＋管理員可編輯**
+- 檔名路徑採使用者暫定案：`utils/director_system_prompt.md`；`config.DIRECTOR_SYSTEM_PROMPT_PATH` 可 env 覆寫。
+- `core/director_builder.py`：單一系統提示詞（`load_director_system_prompt()` 帶 mtime 快取，檔案缺失/空→內嵌乾淨預設版）；
+  `build_director_workflow` 移除 language 參數與雙人格；`call_director` 同步移除 language（快取鍵＝圖+草稿+模型）。
+- 管理員專區（Super User 可見，沿用既有 admin tab 門控）新增「🎬 導演系統提示詞」區：
+  大型可編輯框＋「從檔案重新載入」＋「💾 儲存」；寫檔成功即讓 builder 快字失效（下次生成立即生效），失敗給友善訊息不拋錯。
+- 輸出契約簡化：不再要求【導演筆記】/【English Prompt】雙段；`split_director_output` 保留原樣做新舊格式相容
+  （無標記→整段就是成品，note 為空，UI 已不顯示 note）。
 
-**方案 A（首選，零下載）：直接重用 H3 自帶的導演編碼器**
-本機已裝 `F:\Comfy_models\text_encoders\qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`＝
-MiniMax 微調過的 **Qwen3-VL-32B VLM（含 vision tower）**，語意對齊 H3、為「解圖＋解需求→專業提示詞」而訓練。
-已核對本機 ComfyUI-Desktop **0.30.1**：core 內建 `TextGenerate` 節點（`comfy_extras/nodes_textgen.py`），
-吃既有 text-encoder 物件、**具 image/video 可選輸入**（官方 LTX-2「圖→i2v 提示詞助理」模板即同款用法），
-`comfy/text_encoders/qwen3vl.py` loader 在 core、nvfp4-awq 混量檔案已由 H3 生成實戰載入成功。
-→ 導演 workflow＝與 H3 同一個 encoder 載入＋TextGenerate(圖片+口語需求)→ 回文字。**零新權重、零新節點。**
-待 spike 驗證三點：(a) 微調後是否仍聽得懂口語對話指令（失敗降方案 B）、(b) checkpoint vision 部分是否
-完整接上 TextGenerate 的 image 輸入、(c) ~20GB VRAM 常駐與 H3 生成共用（同檔快取可共用，用完 /free 釋放）。
+**任務3：系統提示詞內容重寫（直接以乾淨新版建立檔案）**
+- 移除不合時宜語句：自誇式「無審查」宣告（對模型是噪音、易引觸發對抗性服從）、雙段格式強制、舊的「口語需求」框架。
+- 新契約：輸入＝使用者草稿（可能附首幀圖）→ 保留原意與畫面連續性，補主體動態/鏡頭/光線/氛圍/聲音細節、
+  時間順序；不編造未要求的角色對白、不提問不解釋；輸出＝僅一段可直接使用的提示詞（語言不拘，建議英文；
+  150 字以內，配合 max_length 預算）。
 
-| 候選模型（方案 B 備援下載版） | 無審查方式 | 體積/VRAM 需求 | ComfyUI 節點（現成活躍） | 評序 |
-|---|---|---|---|---|
-| **Qwen2.5-VL 7B/3B-Instruct-abliterated**（huihui-ai，HF＋ModelScope 雙源） | abliterated（移除拒答）；另有 prithivMLmods `Qwen2.5-VL-Abliterated-Caption` 特化描述版 | 7B≈16GB(fp16)/≈8GB(int4)；3B≈8GB | `1038lab/ComfyUI-QwenVL`、`alexcong/ComfyUI_QwenVL`（模型路徑可換成 abliterated 權重 repo） | ⭐ 首選：畫面的細節描述力最強，abliterated 生態最完整 |
-| **MiniCPM-V 2.6 / MiniCPM-o**（OpenBMB） | 本身低拒答、開放（授權細節開工前核對） | 8B≈16GB | `1038lab/ComfyUI-MiniCPM`、`CY-CHENYUE/ComfyUI-MiniCPM-o` | 亞軍：中文理解佳，節點附 VQA/描述節點 |
-| **Moondream 2 / 3.1**（kijai 節點＋Moondream3.1Caption 節點） | 訓練時未加安全對齊，天性無審查 | ≈2–3GB（極輕） | `kijai/ComfyUI-moondream`、`Comfy_VLM_nodes` | 備援：VRAM 不足時的保底；描述力較弱、不擅长「導演級」提示詞 |
+**收尾**：更新/新增 tests（提示詞載入與存檔、圖格式、refresh 新簽名、call flow 去 language）→ 全量 pytest →
+minimax/upscaler e2e 依序 → SERVER_STATUS 恢復 OK → 回填施工紀錄。
 
-- 三個候選的節點都是「載入模型 → 圖片+文字輸入 → 輸出純文字」的標準三節點形態，WebUI 端可以用同一套 graph 建構器參數化（見其他規劃）。
-- ❓ **需拍板：GPU VRAM 多大？** ≥16GB → 首選 7B；8–12GB → 3B；<8GB → Moondream。
-- 模型權重存放：`F:\Comfy_models\LLM-Vision\<模型名>\`（與既有 `F:\Comfy_models\upscale_models` 掃描模式一致，導演模型下拉選單也掃目錄）。
-- 全部僅本機執行、不外傳；abliterated 衍生模型授權隨基礎模型（Qwen 系可本機自用），開工前完成授權核對。
-
-### 規劃 2. UI 設計
-
-**定位決策**：導演的產出就是要餵給 minimax 的提示詞欄 → 做成 **minimax 頁內嵌的「導演區塊」**（嵌入 I2V/R2V/T2V 三個 tab 的提示詞區旁），不做成 `/director` 獨立頁。理由：免跨頁搬文字、免多一層導航，符合「使用者只看到需要的東西」。❓ 若你偏好獨立 /director 頁再加 localStorage 搬文字，請說。
-
-```
-┌ 🎬 影片導演（點擊展開）────────────────────────┐
-│ 導演需求：[口語描述你想拍什麼….        ]       │
-│ 參考圖片： 自動沿用本頁首幀/參考圖 [+再加一張] │
-│ [ ✨ 請導演寫提示詞 ]   ← 按鈕                 │
-│ （狀態行）導演構思中… / ✅ 已完成              │
-│ 導演成品： [可編輯的多行結果 ]                 │
-│ [ 套用到生成提示詞 ]                           │
-│   ▸ 進階設定（預設收合）                       │
-│      └ 導演模型：[內建（H3 專用導演） ▾]       │
-│        輸出語言：[中文說明＋英文提示詞 ▾]      │
-└────────────────────────────────────────────────┘
-```
-- **導演模型選擇預設隱藏**：一般使用者不需要選模型（預設＝內建 H3 導演編碼器，零設定直接用）；
-  模型下拉與輸出語言收進區塊內的「進階設定」摺疊列，只給想折騰的人。
-- **用詞紅線**（遵守注意事項）：UI 不出現 VLM、custom node、graph、prompt engineering 等開發字；統一用「導演」「導演構思中」「導演成品」。技術名只出現在 admin 專區設定裡。
-- 流程：點按鈕 → WebUI 組 VLM workflow → 走既有 `queue_prompt` 送到 ComfyUI → 從 `/history` 取回文字 → 填入可編輯框 → 「套用」寫進生成提示詞欄（可再手動改）。
-- T2V tab 沒有自帶圖片 → 導演區塊提供「上傳一張參考圖」；沒圖時按鈕變「請導演構思」（純文字導演，同款模型但不吃圖）。
-- 導演呼叫**不进任務歷史**（不污染影片 history），但在 log 留一筆供除錯。
-- 失敗應對（使用者語氣）：節點沒裝 →「導演功能未就緒：請先安裝導演元件」；VRAM 不足 →「導演暫時無法上線，請稍後重試」；逾時 → 同上。按鈕變不可點而非彈錯。
-
-### 其他規劃
-
-- **Phase 0 spike（必做，半天）**：在 ComfyUI UI 手動組一條「H3 同款 qwen3vl_32b_minimax_h3 載入 → TextGenerate(image=首幀, 口語需求)」workflow，
-  親測三件事：能否吃圖、是否聽懂口語指令並產出 H3 風格提示詞、拒答行為。通過→導演走方案 A（零下載）；
-  不通→退方案 B（裝 ComfyUI-QwenVL 節點＋abliterated Qwen2.5-VL 下載版），再不通降 Moondream。不硬做。
-- **檔案規劃**：
-  - `core/director_builder.py`：組 VLM workflow graph（鏡像既有 `core/workflow_builder.py` 的形態；模型/圖片/需求/語言 → graph）
-  - `core/director_client.py`：`call_director(image_paths, brief, model, language)` → queue_prompt、輪詢 /history、取文字、逾時處理（沿用 comfy_client 的重試語意）
-  - `config.py`：`get_vision_models()` 掃 `F:\Comfy_models\LLM-Vision`；導演節點可用性偵測
-  - `views/minimax/components/director_block.py`：上方 UI 區塊元件（三個 tab 共用，塞進 `ActionButtonsComponent` 生成钮附近）
-- **VRAM 共存策略**：導演跑完立即呼叫 ComfyUI `/free`（既有 free_vram 機制）釋放 VLM，避免與 H3 搶显顯存；若偵測 VRAM 不足以同時載入，就維持「用完即放」模式。
-- **快取**：以 (首幀圖 hash + 導演需求 + 模型) 做 key，同條件重點直接回上次結果，可强制重導。
-- **測試規劃**：
-  - 單元：graph 建構正確性、/history 文字解析、快取命中/失效、模型目錄掃描
-  - e2e：minimax runner 加一步——mock 後端對 VLM graph 回固定文字 → 驗證「導演成品→套用到提示詞→生成」串起走
-- **合規與安全**：全程本機、無外部 API；abliterated 模型僅供本機生成輔助；產出提示詞仍由使用者自己承擔內容責任。
-- **任務順序**：Phase0 spike → 模型安裝腳本/指引 → director_builder/client → UI 元件（先 I2V，跑通再推 R2V/T2V）→ 單元＋e2e → 完成紀錄寫 spec、SERVER_STATUS 恢復 OK。
-- 粗估：spike 半天；完整實施 1～2 個工作日當量（不含模型下載時間）。
+### 施工完成紀錄（2026-10-31）
+- **任務1 ✅**：`DirectorBlockComponent` 只剩「✨ 優化提示詞」按鈕＋狀態行（無 Accordion、無需求欄、
+  無成品欄、無套用钮、無語言選單、無導演區塊內進階摺疊）。一鍵直讀提示詞欄現值→打磨→成品直接覆寫回該欄。
+  狀態文案：思考中「🎬 導演努力思考中…」／完成「✅ 提示詞優化完成，原提示詞：<原文>」（HTML 跳脫）／
+  空欄與失敗均給可操作友善訊息。導演模型下拉進 `VideoParamsComponent`「⚙️ 進階參數」（`include_director_model`
+  旗標，僅 I2V 開啟）；5 秒定時重掃刷新目標改指該下拉。
+- **任務2 ✅**：系統提示詞外部化為 `utils/director_system_prompt.md`（`config.DIRECTOR_SYSTEM_PROMPT_PATH` 可 env 覆寫）；
+  `load_director_system_prompt()` mtime 快取＋檔案缺失/空→內嵌 `DEFAULT_DIRECTOR_SYSTEM_PROMPT` 保底；
+  管理員專區新增「🎬 導演系統提示詞」編輯框＋「↺ 從檔案重新載入」＋「💾 儲存」（存檔即讓快取失效，下次生成立即生效；
+  空內容拒收）。`call_director`/`build_director_workflow` 移除 language；快取鍵＝圖+草稿+模型；
+  `split_director_output` 原樣保留做新舊輸出相容（新契約無標記→整段即成品）。
+- **任務3 ✅**：`utils/director_system_prompt.md` 以乾淨新版重建（移除「無審查」自我宣告、雙段格式強制、舊口語需求框架；
+  新契約＝保留原意＋補鏡頭/光線/動作/聲音細節＋僅輸出一段成品＋150 字內）。
+  ⚠️ 注意：寫入時發現該檔已有舊內容且未先讀取就被覆寫（施工失誤，已如實告知使用者）；如有想保留的段落請回饋。
+- **測試**：`tests/test_director.py` 26 項（新增：外部提示詞載入/缺失保底/管理員存檔即時生效、refresh 新簽名）；
+  `tests/test_webapp_routing.py` 新增防回歸（minimax 必含優化提示詞/導演模型/導演系統提示詞、舊摺疊不得復活、
+  其他模組頁不得憑空多出導演欄位）。全量 **198 綠**；minimax／upscaler e2e 全綠；SERVER_STATUS 已恢復 OK。

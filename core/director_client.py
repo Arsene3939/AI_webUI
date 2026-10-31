@@ -28,7 +28,7 @@ from .director_builder import build_director_workflow, split_director_output
 
 logger = get_logger("Director")
 
-# (image_hash, brief, language, model) -> (note, prompt) — cheap re-runs are common
+# (image_hash, draft prompt, model) -> (note, prompt) — cheap re-runs are common
 _director_cache: dict = {}
 DIRECTOR_CACHE_LIMIT = 60
 
@@ -69,7 +69,6 @@ def call_director(
     brief: str,
     image_path: Optional[str] = None,
     model_name: Optional[str] = None,
-    language: str = "zh_en",
     timeout: Optional[int] = None,
     force_refresh: bool = False,
     server_url: Optional[str] = None,
@@ -77,6 +76,8 @@ def call_director(
     """
     Returns (ok, note, prompt_or_error_message). All failures come back as
     (False, "", user-friendly Chinese sentence) — never raises to the UI.
+    `note` stays empty under the unified single-paragraph output contract; it is
+    kept only so legacy two-section outputs still split cleanly.
     """
     if get_server_status() == SERVER_STATUS_UPDATING:
         return False, "", "⚠️ 伺服器維護中，導演暫時休息，請稍後再試"
@@ -87,13 +88,13 @@ def call_director(
         return False, "", "導演尚未就緒：請先下載導演模型（qwen3vl 8B/4B）放到模型的 text_encoders 資料夾"
 
     if not brief or not brief.strip():
-        return False, "", "請先告訴導演你想拍什麼"
+        return False, "", "請先在提示詞欄寫下你的想法，再讓導演幫你打磨"
 
     available, _ = check_server(server_url)
     if not available:
         return False, "", "後端伺服器沒上線，導演無法工作，請先啟動後端"
 
-    cache_key = (_image_fingerprint(image_path), brief.strip(), language, model)
+    cache_key = (_image_fingerprint(image_path), brief.strip(), model)
     if not force_refresh and cache_key in _director_cache:
         note, prompt = _director_cache[cache_key]
         return True, note, prompt
@@ -108,7 +109,6 @@ def call_director(
         brief=brief,
         clip_name=model,
         image_filename=image_fn,
-        language=language,
         seed=int(uuid.uuid4().int % (2 ** 31)),
     )
 
