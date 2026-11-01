@@ -290,3 +290,64 @@ class TestChoiceNormalizers:
         # Reset back
         set_comfy_server_url("http://127.0.0.1:8188")
 
+
+class TestSystemThresholds:
+    """Startup resource thresholds get/set (Spec 2026-11-01 任務 2): JSON persistence,
+    range validation, clamp, corrupt-file fallback."""
+
+    @pytest.fixture()
+    def thresholds_file(self, tmp_path, monkeypatch):
+        import config
+        path = str(tmp_path / "system_thresholds.json")
+        monkeypatch.setattr(config, "SYSTEM_THRESHOLDS_FILE", path)
+        return path
+
+    def test_default_without_file(self, thresholds_file):
+        import config
+        t = config.get_system_thresholds()
+        assert t == {
+            "min_ram_gb": config.MIN_STARTUP_RAM_GB,
+            "max_gpu_util": config.MAX_STARTUP_GPU_UTIL,
+            "min_vram_gb": config.MIN_STARTUP_VRAM_GB,
+        }
+
+    def test_set_get_roundtrip(self, thresholds_file):
+        import config
+        ok, msg = config.set_system_thresholds(40, 60, 8.5)
+        assert ok is True
+        assert "已儲存" in msg
+        import os
+        assert os.path.exists(thresholds_file)
+        t = config.get_system_thresholds()
+        assert t == {"min_ram_gb": 40.0, "max_gpu_util": 60.0, "min_vram_gb": 8.5}
+
+    def test_out_of_range_rejected(self, thresholds_file):
+        import config
+        ok, msg = config.set_system_thresholds(999, 50, 8)  # min_ram limit is 256
+        assert ok is False
+        assert "256" in msg
+        ok, msg = config.set_system_thresholds(40, 101, 8)  # gpu util max 100
+        assert ok is False
+        ok, msg = config.set_system_thresholds(40, "abc", 8)
+        assert ok is False
+        assert "數字" in msg
+        # nothing written on rejection
+        import os
+        assert not os.path.exists(thresholds_file)
+
+    def test_saved_values_clamped_on_read(self, thresholds_file):
+        import config, json
+        with open(thresholds_file, "w", encoding="utf-8") as f:
+            json.dump({"min_ram_gb": 9999, "max_gpu_util": 50}, f)
+        t = config.get_system_thresholds()
+        assert t["min_ram_gb"] == config.THRESHOLD_LIMITS["min_ram_gb"][1]
+        assert t["max_gpu_util"] == 50.0
+        assert t["min_vram_gb"] == config.MIN_STARTUP_VRAM_GB  # missing key -> env default
+
+    def test_corrupt_file_falls_back_silently(self, thresholds_file):
+        import config
+        with open(thresholds_file, "w", encoding="utf-8") as f:
+            f.write("{not json!!")
+        t = config.get_system_thresholds()
+        assert t["min_ram_gb"] == config.MIN_STARTUP_RAM_GB
+

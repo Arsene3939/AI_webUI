@@ -212,6 +212,26 @@ class TestSystemResourceChecking:
         assert "GPU 佔用率" in msg
         assert "顯存" in msg
 
+    @patch("core.comfy_client.subprocess.check_output")
+    @patch("core.comfy_client.psutil.virtual_memory")
+    def test_thresholds_read_at_call_time(self, mock_vm, mock_subprocess, tmp_path, monkeypatch):
+        """Spec 2026-11-01 任務 2: no-arg calls pick up admin-saved thresholds at call
+        time (previously frozen at import via default args)."""
+        import config, json
+        path = str(tmp_path / "system_thresholds.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"min_ram_gb": 8, "max_gpu_util": 95, "min_vram_gb": 12}, f)
+        monkeypatch.setattr(config, "SYSTEM_THRESHOLDS_FILE", path)
+
+        vm = MagicMock()
+        vm.available = 32 * (1024 ** 3)  # 32 GB: passes saved RAM gate (8), would fail env default (50)
+        mock_vm.return_value = vm
+        mock_subprocess.return_value = "10.0, 10240.0\n"  # 10% util OK(<95), 10 GB free VRAM (< saved 12)
+
+        ok, msg, stats = check_system_resources()
+        assert ok is False
+        assert "顯存" in msg and "記憶體" not in msg  # only the VRAM gate tripped -> file values in effect
+
     @patch("core.comfy_client.check_system_resources")
     @patch("core.comfy_client.check_server")
     def test_start_backend_blocked_by_resources(self, mock_check, mock_resources):

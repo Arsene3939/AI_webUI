@@ -27,6 +27,7 @@ from config import (
     COMFY_SERVER_URL,
     WEBUI_HOST,
     WEBUI_PORT,
+    WEBUI_SHUTDOWN_TIMEOUT,
     OUTPUT_DIR,
     get_lan_ip,
     ASPECT_RATIOS,
@@ -169,7 +170,8 @@ def launch_webui(
     log_level = "warning" if quiet else "info"
 
     if prevent_thread_lock:
-        config = uvicorn.Config(asgi_app, host=WEBUI_HOST, port=port, log_level=log_level, access_log=False)
+        config = uvicorn.Config(asgi_app, host=WEBUI_HOST, port=port, log_level=log_level, access_log=False,
+                                timeout_graceful_shutdown=WEBUI_SHUTDOWN_TIMEOUT)
         server = uvicorn.Server(config)
         threading.Thread(target=server.run, name="WebUI-uvicorn", daemon=True).start()
         deadline = time.time() + 30
@@ -182,7 +184,8 @@ def launch_webui(
         return server
 
     try:
-        uvicorn.run(asgi_app, host=WEBUI_HOST, port=port, log_level=log_level, access_log=False)
+        uvicorn.run(asgi_app, host=WEBUI_HOST, port=port, log_level=log_level, access_log=False,
+                    timeout_graceful_shutdown=WEBUI_SHUTDOWN_TIMEOUT)
         return asgi_app
     except OSError as e:
         if "10048" in str(e) or "address already in use" in str(e).lower():
@@ -209,6 +212,10 @@ def _run_dev_reload():
     print(f"Local Access: http://127.0.0.1:{WEBUI_PORT}   LAN: http://{lan_ip}:{WEBUI_PORT}")
     print("Pages: /minimax  /upscaler  /strata")
     print("=" * 60)
+    # timeout_graceful_shutdown：auto-reload 換新 process 時，舊 process 最多等
+    # WEBUI_SHUTDOWN_TIMEOUT 秒就強制收掉瀏覽器殘留長連線（SSE/WS）。缺這個上限時
+    # 舊 process 會永遠卡在 "Waiting for connections to close"，整個 reloader 卡死
+    # （Spec 2026-11-01 任務 1；dev 用較短的 3s 讓重啟更快）。
     uvicorn.run(
         "webapp.server:create_asgi_app",
         factory=True,
@@ -218,6 +225,7 @@ def _run_dev_reload():
         reload_dirs=[os.path.dirname(os.path.abspath(__file__))],
         log_level="info",
         access_log=False,
+        timeout_graceful_shutdown=min(3, WEBUI_SHUTDOWN_TIMEOUT),
     )
 
 

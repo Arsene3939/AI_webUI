@@ -19,9 +19,7 @@ from config import (
     COMFY_SERVER_URL,
     COMFY_WS_URL,
     OUTPUT_DIR,
-    MIN_STARTUP_RAM_GB,
-    MAX_STARTUP_GPU_UTIL,
-    MIN_STARTUP_VRAM_GB,
+    get_system_thresholds,
 )
 from utils.logger import get_logger
 
@@ -46,19 +44,32 @@ def check_server(server_url: Optional[str] = None) -> Tuple[bool, str]:
 
 
 def check_system_resources(
-    min_ram_gb: float = MIN_STARTUP_RAM_GB,
-    max_gpu_util: float = MAX_STARTUP_GPU_UTIL,
-    min_vram_gb: float = MIN_STARTUP_VRAM_GB,
+    min_ram_gb: Optional[float] = None,
+    max_gpu_util: Optional[float] = None,
+    min_vram_gb: Optional[float] = None,
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """
     Checks if computer resources satisfy backend startup conditions (Spec Task 2):
-      - Available RAM > min_ram_gb (default 50 GB)
-      - GPU Utilization < max_gpu_util (default 20%)
-      - Available GPU VRAM > min_vram_gb (default 10 GB)
+      - Available RAM > min_ram_gb
+      - GPU Utilization < max_gpu_util
+      - Available GPU VRAM > min_vram_gb
+
+    未顯式傳入的門檻在「呼叫當下」向 config.get_system_thresholds() 取值
+    （env 預設 + 管理員頁面儲存值；Spec 2026-11-01 任務 2 讓管理頁能即時調整，
+    不再於 import 期固化）。
 
     Returns:
       (ok: bool, warning_msg: str, stats: Dict[str, Any])
     """
+    if min_ram_gb is None or max_gpu_util is None or min_vram_gb is None:
+        _t = get_system_thresholds()
+        if min_ram_gb is None:
+            min_ram_gb = _t["min_ram_gb"]
+        if max_gpu_util is None:
+            max_gpu_util = _t["max_gpu_util"]
+        if min_vram_gb is None:
+            min_vram_gb = _t["min_vram_gb"]
+
     stats: Dict[str, Any] = {
         "ram_available_gb": None,
         "gpu_util_pct": None,

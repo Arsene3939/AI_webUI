@@ -80,6 +80,9 @@ class MiniMaxPage(WebPageScaffold):
                 outputs=[self.minimax_view.admin_tab.tab],
             )
 
+            # 資源門檻滑桿：每次開頁從檔案重抓現值（任務 2）
+            self.minimax_view.admin_tab.wire_page_load(self.blocks)
+
             # 維護可見性閘門（Spec 任務 7）。own_header=False：裝置 ID／header
             # 重繪／IP 記錄由下面的 restore_device_state 負責，此處只藏主體。
             # 註冊順序刻意在 restore 的 load 之前，load 期間 header 的最後寫入者

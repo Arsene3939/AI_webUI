@@ -80,6 +80,49 @@ class TestAdminTabHierarchy:
             assert tab.status_filter is not None
             assert tab.all_tasks_dropdown is not None
 
+    def test_threshold_settings_components_and_flow(self):
+        """Spec 2026-11-01 任務 2: 3 sliders + save + status wired on every admin tab;
+        save is super-user-guarded; reload re-reads the saved file (page-load refresh)."""
+        import config
+        with gr.Blocks():
+            session_ctx = SessionContext().render()
+            tab = MiniMaxAdminTab()
+            tab.render(session_ctx)
+            tab.register_events(session_ctx)
+
+            assert tab.threshold_min_ram is not None
+            assert tab.threshold_max_gpu is not None
+            assert tab.threshold_min_vram is not None
+            assert tab.thresholds_save_btn is not None
+            assert tab.thresholds_status is not None
+            assert hasattr(tab, "wire_page_load")
+
+        admin_req = MagicMock()
+        admin_req.client.host = "127.0.0.1"
+        unauth = MagicMock()
+        unauth.client.host = "192.168.50.50"
+
+        msg = AdminManager.on_save_system_thresholds(30, 55, 7.5, request=unauth)
+        assert "權限不足" in msg
+
+        import tempfile, os
+        tmp = tempfile.mktemp(suffix=".json")
+        old = config.SYSTEM_THRESHOLDS_FILE
+        config.SYSTEM_THRESHOLDS_FILE = tmp
+        try:
+            msg = AdminManager.on_save_system_thresholds(30, 55, 7.5, request=admin_req)
+            assert "已儲存" in msg and "7.5" in msg
+            updates = AdminManager.reload_system_thresholds()
+            assert [u["value"] for u in updates] == [30.0, 55.0, 7.5]
+        finally:
+            config.SYSTEM_THRESHOLDS_FILE = old
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
+        # dashboard html carries the current thresholds for at-a-glance comparison
+        html = AdminManager.build_admin_hw_dashboard_html()
+        assert "啟動門檻" in html
+
     def test_upscaler_admin_tab_components(self):
         """Ensures UpscalerAdminTab instantiates comfy and upscaler specific controls."""
         with gr.Blocks():

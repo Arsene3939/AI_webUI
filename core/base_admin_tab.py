@@ -41,6 +41,13 @@ class BaseAdminTab:
         self.remove_ip_dropdown: Optional[gr.Dropdown] = None
         self.remove_ip_btn: Optional[gr.Button] = None
 
+        # Startup resource thresholds (Spec 2026-11-01 round 3 task 2)
+        self.threshold_min_ram: Optional[gr.Slider] = None
+        self.threshold_max_gpu: Optional[gr.Slider] = None
+        self.threshold_min_vram: Optional[gr.Slider] = None
+        self.thresholds_save_btn: Optional[gr.Button] = None
+        self.thresholds_status: Optional[gr.Markdown] = None
+
     def render(self, session_ctx: Any) -> gr.Tab:
         """Renders the common admin interface and calls subclass custom render hooks."""
         with gr.Tab(self.tab_title, visible=False) as self.tab:
@@ -69,7 +76,29 @@ class BaseAdminTab:
             self.devices_html = gr.HTML(AdminManager.build_admin_devices_html())
             self.refresh_devices_btn = gr.Button("🔄 刷新裝置列表", variant="secondary")
 
-            # 5. Admin IP Whitelist Settings
+            # 5. Backend Startup Resource Thresholds
+            from config import get_system_thresholds
+            _t = get_system_thresholds()
+            gr.Markdown("### 📏 後端啟動資源門檻")
+            gr.Markdown("ComfyUI 啟動前的資源檢查標準；調整後按下儲存，下次啟動檢查立即採用新值。")
+            with gr.Row():
+                self.threshold_min_ram = gr.Slider(
+                    minimum=0, maximum=128, step=1, value=_t["min_ram_gb"],
+                    label="最低可用記憶體 (RAM, GB)", scale=3,
+                )
+                self.threshold_max_gpu = gr.Slider(
+                    minimum=0, maximum=100, step=5, value=_t["max_gpu_util"],
+                    label="GPU 使用率上限 (%)", scale=3,
+                )
+                self.threshold_min_vram = gr.Slider(
+                    minimum=0, maximum=24, step=0.5, value=_t["min_vram_gb"],
+                    label="最低可用顯存 (VRAM, GB)", scale=3,
+                )
+            with gr.Row():
+                self.thresholds_save_btn = gr.Button("💾 儲存門檻設定", variant="primary", scale=2)
+                self.thresholds_status = gr.Markdown("")
+
+            # 6. Admin IP Whitelist Settings
             gr.Markdown("### 🛡️ 管理員名單設定")
             gr.Markdown("在下方輸入指定裝置的 IP 位址，加入後該裝置連線時即可直接操作管理員專屬功能。")
             self.ip_list_html = gr.HTML(AdminManager.build_admin_ip_list_html())
@@ -147,8 +176,23 @@ class BaseAdminTab:
             outputs=[self.ip_list_html, self.remove_ip_dropdown, self.op_msg],
         )
 
+        # Resource threshold save (Spec 2026-11-01 round 3 task 2)
+        self.thresholds_save_btn.click(
+            AdminManager.on_save_system_thresholds,
+            inputs=[self.threshold_min_ram, self.threshold_max_gpu, self.threshold_min_vram],
+            outputs=[self.thresholds_status],
+        )
+
         # Subclass custom events hook
         self.register_custom_events(session_ctx)
+
+    def wire_page_load(self, blocks: gr.Blocks) -> None:
+        """每次開頁從檔案重抓門檻現值（規避 PAGE 單例建置期快照，同 admin prompt 編輯器教訓）。"""
+        blocks.load(
+            AdminManager.reload_system_thresholds,
+            outputs=[self.threshold_min_ram, self.threshold_max_gpu, self.threshold_min_vram],
+            api_name=False,
+        )
 
     def register_custom_events(self, session_ctx: Any) -> None:
         """Hook for subclasses to register their own event listeners."""

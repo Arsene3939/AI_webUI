@@ -1,10 +1,12 @@
 """
 Configuration and helper functions for MiniMax-H3 ComfyUI Gradio WebUI.
 """
+import json
 import socket
 import os
 import math
 import re
+import threading
 from typing import Tuple, Dict, Any, Union, Optional, List
 from PIL import Image
 
@@ -20,6 +22,10 @@ COMFY_WS_URL = COMFY_SERVER_URL.replace("http://", "ws://").replace("https://", 
 # Gradio WebUI Host and Port
 WEBUI_HOST = os.environ.get("WEBUI_HOST", "0.0.0.0")
 WEBUI_PORT = int(os.environ.get("WEBUI_PORT", "7860"))
+# 優雅關閉上限（秒）：关闭/Ctrl+C/auto-reload 時，uvicorn 最多等这么久就強制收掉
+# 殘留的瀏覽器長連線（SSE/WebSocket）。沒有這個上限時，gradio 分頁的長連線會讓
+# 服務永遠卡在 "Waiting for connections to close" → auto-reload 卡死（Spec 2026-11-01 任務 1）。
+WEBUI_SHUTDOWN_TIMEOUT = int(os.environ.get("WEBUI_SHUTDOWN_TIMEOUT", "5"))
 
 # Server Operation Status Flag
 SERVER_STATUS_OK = "OK"
@@ -56,8 +62,8 @@ def set_server_status(status: str):
 
 # Startup System Resource Thresholds (Spec Task 2)
 MIN_STARTUP_RAM_GB = float(os.environ.get("MIN_STARTUP_RAM_GB", "50.0"))
-MAX_STARTUP_GPU_UTIL = float(os.environ.get("MAX_STARTUP_GPU_UTIL", "20.0"))
-MIN_STARTUP_VRAM_GB = float(os.environ.get("MIN_STARTUP_VRAM_GB", "9.5"))
+MAX_STARTUP_GPU_UTIL = float(os.environ.get("MAX_STARTUP_GPU_UTIL", "40.0"))
+MIN_STARTUP_VRAM_GB = float(os.environ.get("MIN_STARTUP_VRAM_GB", "6.0"))
 
 # Default Models (MiniMax-H3)
 DEFAULT_UNET = "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
@@ -447,6 +453,65 @@ except Exception:
     pass
 
 
+# ── 後端啟動資源門檻：執行期可調設定（Spec 2026-11-01 任務 2）──────────────
+# 常數（env／預設值）是底片；管理員頁面儲存後寫進這個 JSON，之後每次檢查都讀檔
+# （同 admin_ips.json 的持久化模式；存檔當下立即生效，不用重啟）。
+SYSTEM_THRESHOLDS_FILE = os.path.join(OUTPUT_DIR, "system_thresholds.json")
+_system_thresholds_lock = threading.Lock()
+
+# 合法範圍（防止滑桿滑錯／亂填把啟動檢查永久卡死）
+THRESHOLD_LIMITS = {
+    "min_ram_gb": (0.0, 256.0),
+    "max_gpu_util": (0.0, 100.0),
+    "min_vram_gb": (0.0, 128.0),
+}
+
+
+def get_system_thresholds() -> Dict[str, float]:
+    """目前生效的啟動門檻：env 預設值 → 管理頁儲存值覆寫。回傳副本，呼叫端可安全修改。"""
+    vals = {
+        "min_ram_gb": MIN_STARTUP_RAM_GB,
+        "max_gpu_util": MAX_STARTUP_GPU_UTIL,
+        "min_vram_gb": MIN_STARTUP_VRAM_GB,
+    }
+    try:
+        if os.path.exists(SYSTEM_THRESHOLDS_FILE):
+            with _system_thresholds_lock, open(SYSTEM_THRESHOLDS_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            for key in vals:
+                if key in saved:
+                    lo, hi = THRESHOLD_LIMITS[key]
+                    vals[key] = min(max(float(saved[key]), lo), hi)
+    except Exception:
+        pass  # 檔案損毀時靜默退回 env 預設，啟動檢查永遠不會被設定檔打掛
+    return vals
+
+
+def set_system_thresholds(min_ram_gb: float, max_gpu_util: float, min_vram_gb: float) -> Tuple[bool, str]:
+    """驗證範圍後原子寫入設定檔；回 (ok, message)。"""
+    try:
+        vals = {
+            "min_ram_gb": float(min_ram_gb),
+            "max_gpu_util": float(max_gpu_util),
+            "min_vram_gb": float(min_vram_gb),
+        }
+    except (TypeError, ValueError):
+        return False, "門檻值必須是數字"
+    for key, val in vals.items():
+        lo, hi = THRESHOLD_LIMITS[key]
+        if not (lo <= val <= hi):
+            return False, f"{key} 必須在 {lo:g} ～ {hi:g} 之間（收到 {val:g}）"
+    try:
+        tmp = SYSTEM_THRESHOLDS_FILE + ".tmp"
+        with _system_thresholds_lock:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(vals, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, SYSTEM_THRESHOLDS_FILE)
+    except Exception as e:
+        return False, f"儲存失敗: {e}"
+    return True, "資源門檻已儲存，下次啟動檢查立即採用新值"
+
+
 def get_lan_ip() -> str:
     """Get the primary local area network IPv4 address of this machine."""
     try:
@@ -562,3 +627,6 @@ def get_director_models(models_dir: Optional[str] = None) -> List[str]:
         models.remove(DEFAULT_DIRECTOR_MODEL)
         models.insert(0, DEFAULT_DIRECTOR_MODEL)
     return models
+
+# trailing-space repro trigger 
+# trigger2 1793529611

@@ -54,5 +54,8 @@ class UpscalerPage(WebPageScaffold):
                 outputs=[self.upscaler_view.admin_tab.tab],
             )
 
+            # 資源門檻滑桿：每次開頁從檔案重抓現值（任務 2）
+            self.upscaler_view.admin_tab.wire_page_load(self.blocks)
+
 
 PAGE = UpscalerPage()

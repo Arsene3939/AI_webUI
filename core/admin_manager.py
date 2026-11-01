@@ -16,6 +16,8 @@ from config import (
     get_server_status,
     set_server_status,
     get_lan_ip,
+    get_system_thresholds,
+    set_system_thresholds,
 )
 from core.comfy_client import (
     free_comfyui_memory,
@@ -231,9 +233,42 @@ class AdminManager:
         new_val = rem_choices[0] if rem_choices and "無可移除" not in rem_choices[0] else ""
         return cls.build_admin_ip_list_html(), gr.update(choices=rem_choices, value=new_val), f"✅ 已將 IP '{target}' 從管理員名單中移除"
 
+    # ── 後端啟動資源門檻設定（Spec 2026-11-01 任務 2）────────────────────────
+    # RAM／GPU 使用率／VRAM 三項門檻，管理員在頁面直接調整；
+    # 持久化與範圍驗證在 config.set_system_thresholds，儲存後立即生效。
+
+    @classmethod
+    def reload_system_thresholds(cls):
+        """從儲存設定重抓三個滑桿現值（掛在 blocks.load，規避建置期快照問題）。"""
+        t = get_system_thresholds()
+        return (
+            gr.update(value=t["min_ram_gb"]),
+            gr.update(value=t["max_gpu_util"]),
+            gr.update(value=t["min_vram_gb"]),
+        )
+
+    @classmethod
+    def on_save_system_thresholds(cls, min_ram_gb, max_gpu_util, min_vram_gb, request: gr.Request = None) -> str:
+        if not cls.is_super_user(request):
+            return "⚠️ 權限不足：僅管理員可調整啟動資源門檻"
+        ok, msg = set_system_thresholds(min_ram_gb, max_gpu_util, min_vram_gb)
+        if not ok:
+            return f"❌ {msg}"
+        t = get_system_thresholds()
+        logger.info(
+            "[Admin] Startup resource thresholds updated: RAM>=%gGB, GPU<=%g%%, VRAM>=%gGB",
+            t["min_ram_gb"], t["max_gpu_util"], t["min_vram_gb"],
+        )
+        return (
+            f"✅ {msg}\n\n"
+            f"目前生效門檻：可用記憶體 **≥ {t['min_ram_gb']:g} GB** ｜ "
+            f"GPU 使用率 **≤ {t['max_gpu_util']:g}%** ｜ 可用顯存 **≥ {t['min_vram_gb']:g} GB**"
+        )
+
     @classmethod
     def build_admin_hw_dashboard_html(cls) -> str:
         d = get_system_dashboard_data()
+        t = get_system_thresholds()
         card_style = (
             'background: #f8fafc; border: 1.5px solid #e2e8f0; border-radius: 10px; '
             'padding: 14px 18px; flex: 1; min-width: 180px; box-shadow: 0 1px 3px rgba(0,0,0,0.03);'
@@ -247,17 +282,17 @@ class AdminManager:
             <div style="{card_style}">
                 <div style="{title_style}">🧠 記憶體 (RAM)</div>
                 <div style="{val_style}">{d['ram_used_gb']} / {d['ram_total_gb']} GB</div>
-                <div style="{sub_style}">可用 {d['ram_available_gb']} GB ({d['ram_percent']}%)</div>
+                <div style="{sub_style}">可用 {d['ram_available_gb']} GB ({d['ram_percent']}%)<br>啟動門檻：可用 ≥ {t['min_ram_gb']:g} GB</div>
             </div>
             <div style="{card_style}">
                 <div style="{title_style}">⚡ GPU 核心負載</div>
                 <div style="{val_style}">{d['gpu_util_pct']}%</div>
-                <div style="{sub_style}">晶片即時運算佔用</div>
+                <div style="{sub_style}">晶片即時運算佔用<br>啟動門檻：≤ {t['max_gpu_util']:g}%</div>
             </div>
             <div style="{card_style}">
                 <div style="{title_style}">🎮 GPU 顯存 (VRAM)</div>
                 <div style="{val_style}">{d['vram_used_gb']} / {d['vram_total_gb']} GB</div>
-                <div style="{sub_style}">可用 {d['vram_free_gb']} GB ({d['vram_percent']}%)</div>
+                <div style="{sub_style}">可用 {d['vram_free_gb']} GB ({d['vram_percent']}%)<br>啟動門檻：可用 ≥ {t['min_vram_gb']:g} GB</div>
             </div>
             <div style="{card_style}">
                 <div style="{title_style}">💾 輸出磁碟空間</div>
