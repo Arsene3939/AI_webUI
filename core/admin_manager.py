@@ -5,6 +5,7 @@ import os
 import json
 import time
 import socket
+import subprocess
 import ipaddress
 import threading
 from typing import List, Tuple, Optional, Any
@@ -18,6 +19,7 @@ from config import (
     get_lan_ip,
     get_system_thresholds,
     set_system_thresholds,
+    ADMIN_PC_SHUTDOWN_DELAY_S,
 )
 from core.comfy_client import (
     free_comfyui_memory,
@@ -428,6 +430,46 @@ class AdminManager:
         badge_html = cls.build_admin_status_badge()
         msg = f"✅ 已成功切換為：{'🟢 正常服務中' if new_status == SERVER_STATUS_OK else '🔧 伺服器維護/更新中'}"
         return badge_html, gr.update(value=btn_text), msg
+
+    # ── 電腦電源控制（Spec 2026-11-02 第 2 輪任務 1）─────────────────────────
+    # 關機走 Windows 內建 shutdown 指令：先排定 N 秒倒數（期間系統会有倒數提示），
+    # 讓管理員有一段反悔窗口可用「取消關機」(shutdown /a) 中止。super-user 門護。
+
+    @classmethod
+    def on_shutdown_pc(cls, request: gr.Request = None) -> str:
+        if not cls.is_super_user(request):
+            return "⚠️ 權限不足：僅管理員可執行電腦關機"
+        delay = ADMIN_PC_SHUTDOWN_DELAY_S
+        try:
+            subprocess.Popen(
+                ["shutdown", "/s", "/t", str(delay), "/c",
+                 f"AI WebUI 管理員發起的關機（{delay} 秒後），可在管理頁點「取消關機」中止"],
+            )
+        except Exception as e:
+            logger.error("[Admin] PC shutdown scheduling failed: %s", e)
+            return f"❌ 無法安排關機：{e}"
+        logger.warning("[Admin] PC shutdown scheduled in %ss by admin request", delay)
+        return (
+            f"🛑 已安排電腦在 **{delay} 秒後關機**。"
+            "要中止請立刻點下方「✋ 取消關機」，或留意畫面上的系統倒數提示。"
+        )
+
+    @classmethod
+    def on_cancel_shutdown(cls, request: gr.Request = None) -> str:
+        if not cls.is_super_user(request):
+            return "⚠️ 權限不足：僅管理員可取消關機"
+        try:
+            result = subprocess.run(
+                ["shutdown", "/a"], capture_output=True, text=True, timeout=5,
+            )
+        except Exception as e:
+            logger.error("[Admin] shutdown abort failed: %s", e)
+            return f"❌ 取消關機失敗：{e}"
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            return f"ℹ️ 目前沒有待中止的關機程序{'（' + detail + '）' if detail else ''}"
+        logger.warning("[Admin] Scheduled PC shutdown aborted by admin request")
+        return "✅ 已取消待執行的關機，電腦不會關掉。"
 
     @classmethod
     def on_free_vram(cls, request: gr.Request = None):

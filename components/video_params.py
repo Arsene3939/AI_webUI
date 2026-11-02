@@ -10,6 +10,11 @@ from PIL import Image
 import gradio as gr
 from config import (
     get_director_models,
+    list_comfy_models,
+    DEFAULT_UNET,
+    DEFAULT_CLIP,
+    DEFAULT_VIDEO_VAE,
+    DEFAULT_AUDIO_VAE,
     ORIGINAL_RATIO_LABEL,
     I2V_ASPECT_RATIOS,
     T2V_ASPECT_RATIOS,
@@ -66,10 +71,14 @@ class VideoParamsComponent:
         default_duration: float = 2.0,
         default_steps: int = 20,
         include_director_model: bool = False,
+        include_model_selectors: bool = False,
     ):
         # 導演模型下拉收在「⚙️ 進階參數」裡（Spec 2026-10-31 UI 簡化案）：
         # 只有挂了導演區塊的 tab（I2V）開旗標，其他 tab 不會憑空多出一個用不到的欄位。
         self.include_director_model = include_director_model
+        # 生成模型選擇（管理員限定，Spec 2026-11-02）：一般使用者看不到這區，
+        # 且後端 resolve_model_names 另有一道把關，UI 藏不藏都只能用預設模型。
+        self.include_model_selectors = include_model_selectors
         self.aspect_ratio_choices = aspect_ratio_choices
         self.default_aspect_ratio = default_aspect_ratio
         self.default_quality = default_quality
@@ -87,6 +96,12 @@ class VideoParamsComponent:
         self.sampler: Optional[gr.Dropdown] = None
         self.scheduler: Optional[gr.Dropdown] = None
         self.director_model: Optional[gr.Dropdown] = None
+        # 管理員模型選擇區（build-time 一律隱藏；開頁時由 super-user 檢查決定可可見）
+        self.model_row: Optional[gr.Row] = None
+        self.model_unet: Optional[gr.Dropdown] = None
+        self.model_clip: Optional[gr.Dropdown] = None
+        self.model_video_vae: Optional[gr.Dropdown] = None
+        self.model_audio_vae: Optional[gr.Dropdown] = None
 
     def render(self) -> "VideoParamsComponent":
         # Row 1: Aspect Ratio, Quality Level
@@ -143,6 +158,27 @@ class VideoParamsComponent:
                         interactive=bool(director_models),
                         allow_custom_value=False,
                     )
+
+            if self.include_model_selectors:
+                # 管理員限定：build-time 隱藏，開頁時 super-user 檢查決定可見性；
+                # choices 每次開頁從模型資料夾重掃（放新模型即出現在清單）。
+                def _mk(kind: str, default: str, label: str) -> gr.Dropdown:
+                    return gr.Dropdown(
+                        choices=list_comfy_models(kind, preferred=default),
+                        value=default, label=label,
+                        filterable=False, allow_custom_value=False,
+                    )
+
+                # 整個區（標題＋兩列下拉）包在同一個可見性受控的容器裡，
+                # 開頁 load 時 super-user 才看得到全部元素。
+                with gr.Column(visible=False) as self.model_row:
+                    gr.Markdown("🧠 **生成模型**（管理員限定；一般使用者一律使用預設模型）")
+                    with gr.Row():
+                        self.model_unet = _mk("unet", DEFAULT_UNET, "生成模型 (UNET)")
+                        self.model_clip = _mk("clip", DEFAULT_CLIP, "文字Encoding模型 (CLIP)")
+                    with gr.Row():
+                        self.model_video_vae = _mk("vae", DEFAULT_VIDEO_VAE, "影像 VAE")
+                        self.model_audio_vae = _mk("vae", DEFAULT_AUDIO_VAE, "音訊 VAE")
 
         return self
 

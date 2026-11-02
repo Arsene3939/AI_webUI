@@ -48,6 +48,11 @@ class BaseAdminTab:
         self.thresholds_save_btn: Optional[gr.Button] = None
         self.thresholds_status: Optional[gr.Markdown] = None
 
+        # PC power controls (Spec 2026-11-02 第 2 輪任務 1)
+        self.shutdown_pc_btn: Optional[gr.Button] = None
+        self.cancel_shutdown_btn: Optional[gr.Button] = None
+        self.pc_power_status: Optional[gr.Markdown] = None
+
     def render(self, session_ctx: Any) -> gr.Tab:
         """Renders the common admin interface and calls subclass custom render hooks."""
         with gr.Tab(self.tab_title, visible=False) as self.tab:
@@ -119,6 +124,15 @@ class BaseAdminTab:
                 )
                 self.remove_ip_btn = gr.Button("🗑️ 移除此 IP", variant="stop", scale=2)
 
+            # 7. PC Power (Spec 2026-11-02 第 2 輪任務 1)
+            gr.Markdown("### 💻 電腦電源")
+            gr.Markdown("⚠️ 「電腦關機」會關閉這台執行 WebUI 與後端的實體電腦；"
+                        "按下後有短暫倒數緩衝，期間可點「取消關機」中止。")
+            with gr.Row():
+                self.shutdown_pc_btn = gr.Button("🛑 電腦關機", variant="stop", scale=2)
+                self.cancel_shutdown_btn = gr.Button("✋ 取消關機", variant="secondary", scale=2)
+            self.pc_power_status = gr.Markdown("")
+
         return self.tab
 
     def render_custom_content(self, session_ctx: Any) -> None:
@@ -181,6 +195,16 @@ class BaseAdminTab:
             AdminManager.on_save_system_thresholds,
             inputs=[self.threshold_min_ram, self.threshold_max_gpu, self.threshold_min_vram],
             outputs=[self.thresholds_status],
+        )
+
+        # PC power controls (Spec 2026-11-02 第 2 輪任務 1)：super-user 門護在 AdminManager 內
+        self.shutdown_pc_btn.click(
+            AdminManager.on_shutdown_pc,
+            outputs=[self.pc_power_status],
+        )
+        self.cancel_shutdown_btn.click(
+            AdminManager.on_cancel_shutdown,
+            outputs=[self.pc_power_status],
         )
 
         # Subclass custom events hook

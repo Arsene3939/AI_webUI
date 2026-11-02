@@ -15,6 +15,7 @@ from config import (
     DEFAULT_CLIP,
     DEFAULT_VIDEO_VAE,
     DEFAULT_AUDIO_VAE,
+    resolve_model_names,
     calculate_dimensions,
     normalize_aspect_ratio,
     normalize_quality_choice,
@@ -24,6 +25,7 @@ from config import (
     get_server_status,
 )
 from core.workflow_builder import build_r2v_workflow
+from core.admin_manager import AdminManager
 from core.comfy_client import upload_media_file
 from task_manager import task_manager
 from components.video_params import VideoParamsComponent
@@ -59,6 +61,7 @@ def handle_r2v_generate(
     video_vae=DEFAULT_VIDEO_VAE,
     audio_vae=DEFAULT_AUDIO_VAE,
     on_completed_cb=None,
+    request: gr.Request = None,
 ):
     if not device_id:
         device_id = f"dev_{uuid.uuid4().hex[:6]}"
@@ -111,6 +114,13 @@ def handle_r2v_generate(
 
     yield build_progress_html("⚡ 前處理中：正在準備生成..."), None, current_session_task, device_id
 
+    # 模型選擇把關（Spec 2026-11-02）：只有管理員的合法選擇會生效，其餘一律退回預設模型
+    models = resolve_model_names(unet_name, clip_name, video_vae, audio_vae,
+                                 is_admin=AdminManager.is_super_user(request))
+    if (models["unet"], models["clip"]) != (DEFAULT_UNET, DEFAULT_CLIP):
+        logger.info("[R2V] Admin model override: unet=%s clip=%s vaes=%s/%s",
+                    models["unet"], models["clip"], models["video_vae"], models["audio_vae"])
+
     prompt_graph = build_r2v_workflow(
         prompt=prompt,
         ref_image_filenames=ref_img_files,
@@ -126,10 +136,10 @@ def handle_r2v_generate(
         sampler_name=sampler,
         scheduler_name=scheduler,
         fps=float(MINIMAX_FIXED_FPS),  # 模型只支援 24fps（Spec 任務 5）
-        unet_name=DEFAULT_UNET,
-        clip_name=DEFAULT_CLIP,
-        video_vae_name=DEFAULT_VIDEO_VAE,
-        audio_vae_name=DEFAULT_AUDIO_VAE,
+        unet_name=models["unet"],
+        clip_name=models["clip"],
+        video_vae_name=models["video_vae"],
+        audio_vae_name=models["audio_vae"],
     )
 
     saved_params = {
@@ -187,6 +197,7 @@ class R2VTab:
             default_quality=DEFAULT_QUALITY_LEVEL,
             default_duration=3.0,
             default_steps=20,
+            include_model_selectors=True,  # 管理員限定模型選擇（Spec 2026-11-02）
         )
         self.action_btns = ActionButtonsComponent(generate_label="🚀 開始生成影片")
         self.player_card = VideoPlayerCardComponent(label="生成影片")
@@ -229,8 +240,8 @@ class R2VTab:
     def register_events(self, session_task_state: gr.BrowserState, device_id_state: gr.BrowserState, on_completed_cb=None):
         self.params_card.register_events(image_ref=self.ref_img_1)
 
-        def generate_wrapper(*args):
-            yield from handle_r2v_generate(*args, on_completed_cb=on_completed_cb)
+        def generate_wrapper(*args, request: gr.Request = None):
+            yield from handle_r2v_generate(*args, on_completed_cb=on_completed_cb, request=request)
 
         def handle_stop(device_id):
             task_manager.interrupt_device_tasks(device_id=device_id, module="minimax")
@@ -255,6 +266,9 @@ class R2VTab:
                 self.params_card.steps, self.params_card.denoise,
                 self.params_card.sampler, self.params_card.scheduler,
                 session_task_state, device_id_state,
+                # 管理員模型選擇下拉（一般使用者為 hidden+預設值，後端仍會退回預設模型）
+                self.params_card.model_unet, self.params_card.model_clip,
+                self.params_card.model_video_vae, self.params_card.model_audio_vae,
             ],
             outputs=[self.player_card.status, self.player_card.output_video, session_task_state, device_id_state],
             api_name="handle_r2v_generate",

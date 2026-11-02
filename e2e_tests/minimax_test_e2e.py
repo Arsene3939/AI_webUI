@@ -370,6 +370,10 @@ class E2ETestRunner:
                 "simple",
                 None,
                 user_device_id,
+                None,  # 管理模型下拉 x4（e2e 非管理員語境 → 一律用預設模型）
+                None,
+                None,
+                None,
                 api_name="/handle_i2v_generate",
             )
 

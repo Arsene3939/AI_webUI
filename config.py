@@ -27,6 +27,10 @@ WEBUI_PORT = int(os.environ.get("WEBUI_PORT", "7860"))
 # 服務永遠卡在 "Waiting for connections to close" → auto-reload 卡死（Spec 2026-11-01 任務 1）。
 WEBUI_SHUTDOWN_TIMEOUT = int(os.environ.get("WEBUI_SHUTDOWN_TIMEOUT", "5"))
 
+# 管理頁「電腦關機」倒數秒數（Spec 2026-11-02 第 2 輪任務 1）：
+# 點下關機後 shutdown /s /t N，這段緩衝讓管理員可用「取消關機」(shutdown /a) 中止。
+ADMIN_PC_SHUTDOWN_DELAY_S = int(os.environ.get("ADMIN_PC_SHUTDOWN_DELAY_S", "15"))
+
 # Server Operation Status Flag
 SERVER_STATUS_OK = "OK"
 SERVER_STATUS_UPDATING = "UPDATING"
@@ -70,6 +74,58 @@ DEFAULT_UNET = "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
 DEFAULT_CLIP = "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
 DEFAULT_VIDEO_VAE = "minimax_h3_video_vae_fp16.safetensors"
 DEFAULT_AUDIO_VAE = "minimax_h3_audio_vae_fp32.safetensors"
+
+# ── 模型檔案掃描（Spec 2026-11-02：管理員專屬模型選擇）──────────────────────
+# 根目錄對應 ComfyUI 的 extra_model_paths.yaml（base_path + 各型別資料夾）。
+COMFY_MODELS_DIR = os.environ.get("COMFY_MODELS_DIR", r"F:/Comfy_models")
+COMFY_MODEL_SEARCH_DIRS: Dict[str, Tuple[str, ...]] = {
+    "unet": ("diffusion_models", "unet"),
+    "clip": ("text_encoders", "clip"),
+    "vae": ("vae",),
+}
+_MODEL_FILE_EXTS = (".safetensors", ".ckpt", ".pt", ".pth", ".pkl", ".bin")
+
+
+def list_comfy_models(kind: str, preferred: Optional[str] = None) -> List[str]:
+    """掃描某型別（unet／clip／vae）資料夾，回傳 ComfyUI 相對路徑格式（含子資料夾）的檔名清單。
+    多個根目錄（如 diffusion_models ＋ unet）結果去重；`preferred` 存在時排最前。"""
+    roots = COMFY_MODEL_SEARCH_DIRS.get(kind, ())
+    found: set = set()
+    for sub in roots:
+        root = os.path.join(COMFY_MODELS_DIR, sub)
+        if not os.path.isdir(root):
+            continue
+        try:
+            for dirpath, _dirnames, filenames in os.walk(root):
+                for fn in filenames:
+                    if fn.lower().endswith(_MODEL_FILE_EXTS):
+                        rel = os.path.relpath(os.path.join(dirpath, fn), root)
+                        found.add(rel.replace(os.sep, "/"))
+        except Exception:
+            pass
+    models = sorted(found)
+    if preferred and preferred in models:
+        models.remove(preferred)
+        models.insert(0, preferred)
+    return models
+
+
+def resolve_model_names(unet: Optional[str], clip: Optional[str],
+                        video_vae: Optional[str], audio_vae: Optional[str],
+                        is_admin: bool) -> Dict[str, str]:
+    """生成前模型把關：非管理員、值為空、或值不在實際掃描到的清單內（防任意路徑注入），
+    一律退回寫死的 DEFAULT_*。只有管理員的合法選擇會被採用。"""
+    def pick(name: Optional[str], kind: str, default: str) -> str:
+        if not is_admin or not name or not isinstance(name, str):
+            return default
+        return name if name in list_comfy_models(kind) else default
+
+    return {
+        "unet": pick(unet, "unet", DEFAULT_UNET),
+        "clip": pick(clip, "clip", DEFAULT_CLIP),
+        "video_vae": pick(video_vae, "vae", DEFAULT_VIDEO_VAE),
+        "audio_vae": pick(audio_vae, "vae", DEFAULT_AUDIO_VAE),
+    }
 
 # Aspect Ratios and Megapixels calculation
 ORIGINAL_RATIO_LABEL = "原圖比例 (自動對齊)"
@@ -627,6 +683,3 @@ def get_director_models(models_dir: Optional[str] = None) -> List[str]:
         models.remove(DEFAULT_DIRECTOR_MODEL)
         models.insert(0, DEFAULT_DIRECTOR_MODEL)
     return models
-
-# trailing-space repro trigger 
-# trigger2 1793529611

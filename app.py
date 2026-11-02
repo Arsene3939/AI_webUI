@@ -124,6 +124,8 @@ build_admin_ip_list_html = AdminManager.build_admin_ip_list_html
 get_admin_ip_remove_choices = AdminManager.get_admin_ip_remove_choices
 on_add_admin_ip = AdminManager.on_add_admin_ip
 on_remove_admin_ip = AdminManager.on_remove_admin_ip
+on_shutdown_pc = AdminManager.on_shutdown_pc
+on_cancel_shutdown = AdminManager.on_cancel_shutdown
 
 
 def launch_webui(

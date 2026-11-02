@@ -123,6 +123,47 @@ class TestAdminTabHierarchy:
         html = AdminManager.build_admin_hw_dashboard_html()
         assert "啟動門檻" in html
 
+    def test_pc_power_controls(self):
+        """Spec 2026-11-02 第2輪任務1: 電腦關機/取消關機存在且受 super-user 門護；
+        非管理員不得觸發任何 shutdown 指令；管理員路徑走 shutdown /s /t N 與 /a。"""
+        from unittest.mock import patch, call
+
+        with gr.Blocks():
+            session_ctx = SessionContext().render()
+            tab = MiniMaxAdminTab()
+            tab.render(session_ctx)
+            tab.register_events(session_ctx)
+            assert tab.shutdown_pc_btn is not None
+            assert tab.cancel_shutdown_btn is not None
+            assert tab.pc_power_status is not None
+
+        admin_req = MagicMock()
+        admin_req.client.host = "127.0.0.1"
+        unauth = MagicMock()
+        unauth.client.host = "10.10.9.9"
+
+        with patch("core.admin_manager.subprocess.Popen") as popen, \
+             patch("core.admin_manager.subprocess.run") as prun:
+            # 非管理員：只能拿到權限訊息，不碰任何系統指令
+            msg = AdminManager.on_shutdown_pc(request=unauth)
+            assert "權限不足" in msg
+            assert AdminManager.on_cancel_shutdown(request=unauth).count("權限不足") == 1
+            popen.assert_not_called()
+            prun.assert_not_called()
+
+            # 管理員：排定倒數關機（带 /s /t 延遲緩衝）
+            msg = AdminManager.on_shutdown_pc(request=admin_req)
+            assert "秒後關機" in msg
+            args = popen.call_args[0][0]
+            assert args[0] == "shutdown" and "/s" in args and "/t" in args
+
+            # 取消：shutdown /a；回傳碼非 0（沒有待取消程序）也要給友善訊息
+            prun.return_value = MagicMock(returncode=0)
+            assert "已取消" in AdminManager.on_cancel_shutdown(request=admin_req)
+            assert prun.call_args[0][0] == ["shutdown", "/a"]
+            prun.return_value = MagicMock(returncode=112, stderr="no abort")
+            assert "沒有待中止的關機" in AdminManager.on_cancel_shutdown(request=admin_req)
+
     def test_upscaler_admin_tab_components(self):
         """Ensures UpscalerAdminTab instantiates comfy and upscaler specific controls."""
         with gr.Blocks():

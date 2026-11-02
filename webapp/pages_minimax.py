@@ -10,6 +10,13 @@ from typing import Optional
 
 import gradio as gr
 
+from config import (
+    list_comfy_models,
+    DEFAULT_UNET,
+    DEFAULT_CLIP,
+    DEFAULT_VIDEO_VAE,
+    DEFAULT_AUDIO_VAE,
+)
 from task_manager import task_manager
 from utils.logger import get_logger
 
@@ -97,6 +104,46 @@ class MiniMaxPage(WebPageScaffold):
             self.blocks.load(
                 lambda: gr.update(value=load_director_system_prompt()),
                 outputs=[self.minimax_view.admin_tab.director_prompt_editor],
+                api_name=False,
+            )
+
+            # 管理員模型選擇區（Spec 2026-11-02）：開頁時
+            # ① 依 super-user 決定三個 tab 的模型區可見性；
+            # ② 從模型資料夾重掃 12 個下拉的 choices（放新模型進資料夾，開頁即出現）。
+            _MODEL_KIND_DEFAULTS = [
+                ("model_unet", "unet", DEFAULT_UNET),
+                ("model_clip", "clip", DEFAULT_CLIP),
+                ("model_video_vae", "vae", DEFAULT_VIDEO_VAE),
+                ("model_audio_vae", "vae", DEFAULT_AUDIO_VAE),
+            ]
+
+            def refresh_model_access(request: gr.Request = None):
+                is_admin = AdminManager.is_super_user(request)
+                cards = [
+                    self.minimax_view.i2v_tab.params_card,
+                    self.minimax_view.t2v_tab.params_card,
+                    self.minimax_view.r2v_tab.params_card,
+                ]
+                outs = [gr.update(visible=is_admin) for _ in cards]
+                for card in cards:
+                    for attr, kind, dflt in _MODEL_KIND_DEFAULTS:
+                        outs.append(gr.update(choices=list_comfy_models(kind, preferred=dflt)))
+                return outs
+
+            model_outputs = []
+            for card in (self.minimax_view.i2v_tab.params_card,
+                         self.minimax_view.t2v_tab.params_card,
+                         self.minimax_view.r2v_tab.params_card):
+                model_outputs.append(card.model_row)
+            for card in (self.minimax_view.i2v_tab.params_card,
+                         self.minimax_view.t2v_tab.params_card,
+                         self.minimax_view.r2v_tab.params_card):
+                for attr, _kind, _dflt in _MODEL_KIND_DEFAULTS:
+                    model_outputs.append(getattr(card, attr))
+
+            self.blocks.load(
+                refresh_model_access,
+                outputs=model_outputs,
                 api_name=False,
             )
 
