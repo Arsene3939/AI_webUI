@@ -8,6 +8,15 @@ instead of an in-page radio switcher. The active page highlights its own link.
 from typing import Optional
 import gradio as gr
 
+from ui_text import (
+    CHROME_NAV_MINIMAX,
+    CHROME_NAV_STRATA,
+    CHROME_NAV_UPSCALER,
+    CHROME_SIDEBAR_LABEL,
+    CHROME_SIDEBAR_TITLE_MD,
+)
+
+# 模組鍵是內部識別字串（路由/測試按名取用），從不顯示於畫面，故不進 ui_text。
 MODULE_MINIMAX = "comfyUI: minimax video generator"
 MODULE_UPSCALER = "comfyUI: video resolution upscaler"
 MODULE_STRATA = "strata: Qwen3.8-flash-next LLM"
@@ -20,9 +29,9 @@ MODULE_CHOICES = [
 
 # module key -> (sidebar label, url path). Order defines sidebar order.
 MODULE_NAV_ITEMS = [
-    (MODULE_MINIMAX, "/minimax", "🎬 影片生成"),
-    (MODULE_UPSCALER, "/upscaler", "🔍 畫質放大"),
-    (MODULE_STRATA, "/strata", "💬 智慧助理"),
+    (MODULE_MINIMAX, "/minimax", CHROME_NAV_MINIMAX),
+    (MODULE_UPSCALER, "/upscaler", CHROME_NAV_UPSCALER),
+    (MODULE_STRATA, "/strata", CHROME_NAV_STRATA),
 ]
 
 
@@ -49,12 +58,12 @@ class DashboardNavComponent:
 
     def render(self) -> "DashboardNavComponent":
         with gr.Sidebar(
-            label="控制儀表板",
+            label=CHROME_SIDEBAR_LABEL,
             open=False,
             position="left",
             width=260,
             elem_classes=["dashboard-sidebar"],
         ) as self.sidebar:
-            gr.Markdown("### 📊 功能切換", elem_classes=["dashboard-title"])
+            gr.Markdown(CHROME_SIDEBAR_TITLE_MD, elem_classes=["dashboard-title"])
             self.links_html = gr.HTML(self._build_links_html(), elem_classes=["dashboard-simple-radio"])
         return self

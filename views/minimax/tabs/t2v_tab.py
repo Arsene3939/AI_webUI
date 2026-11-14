@@ -29,6 +29,17 @@ from core.admin_manager import AdminManager
 from task_manager import task_manager
 from components.video_params import VideoParamsComponent
 from components.media_player import VideoPlayerCardComponent, ActionButtonsComponent, build_progress_html
+from ui_text import (
+    MINIMAX_MSG_NEED_PROMPT,
+    MINIMAX_MSG_PREPARING,
+    MINIMAX_MSG_SERVER_UPDATING,
+    MINIMAX_PROMPT_LABEL,
+    MINIMAX_TAB_T2V,
+    MINIMAX_T2V_PROMPT_PLACEHOLDER,
+    TASK_GENERATE_BTN_DEFAULT,
+    TASK_MSG_INTERRUPTED_BY_USER,
+    TASK_OUTPUT_VIDEO_LABEL,
+)
 from utils.logger import get_logger
 
 logger = get_logger("T2VTab")
@@ -59,11 +70,11 @@ def handle_t2v_generate(
         device_id = f"dev_{uuid.uuid4().hex[:6]}"
 
     if get_server_status() == SERVER_STATUS_UPDATING:
-        yield build_progress_html("⚠️ 伺服器維護/更新中，暫停提交生成任務"), None, current_session_task, device_id
+        yield build_progress_html(MINIMAX_MSG_SERVER_UPDATING), None, current_session_task, device_id
         return
 
     if not prompt or not prompt.strip():
-        yield build_progress_html("❌ 請輸入提示詞"), None, current_session_task, device_id
+        yield build_progress_html(MINIMAX_MSG_NEED_PROMPT), None, current_session_task, device_id
         return
 
     aspect_ratio = normalize_aspect_ratio(aspect_ratio)
@@ -73,7 +84,7 @@ def handle_t2v_generate(
 
     w, h = calculate_dimensions(aspect_ratio, quality_level, multiple=DEFAULT_MULTIPLE)
 
-    yield build_progress_html("⚡ 前處理中：正在準備生成..."), None, current_session_task, device_id
+    yield build_progress_html(MINIMAX_MSG_PREPARING), None, current_session_task, device_id
     logger.info("[T2V] Request from device '%s': size=%dx%d, steps=%s, seed=%s, duration=%ss, prompt='%s'",
                 device_id, w, h, steps, seed, duration, prompt[:50])
 
@@ -144,16 +155,16 @@ class T2VTab:
             default_steps=20,
             include_model_selectors=True,  # 管理員限定模型選擇（Spec 2026-11-02）
         )
-        self.action_btns = ActionButtonsComponent(generate_label="🚀 開始生成影片")
-        self.player_card = VideoPlayerCardComponent(label="生成影片")
+        self.action_btns = ActionButtonsComponent(generate_label=TASK_GENERATE_BTN_DEFAULT)
+        self.player_card = VideoPlayerCardComponent(label=TASK_OUTPUT_VIDEO_LABEL)
 
     def render(self) -> "T2VTab":
-        with gr.Tab("✍️ 文生影片 (T2V)"):
+        with gr.Tab(MINIMAX_TAB_T2V):
             with gr.Row():
                 with gr.Column(scale=1):
                     self.prompt = gr.Textbox(
-                        label="提示詞",
-                        placeholder="描述想生成的場景、運鏡、角色動態、氛圍與背景音樂/音效...",
+                        label=MINIMAX_PROMPT_LABEL,
+                        placeholder=MINIMAX_T2V_PROMPT_PLACEHOLDER,
                         lines=6,
                         value="",
                     )
@@ -173,7 +184,7 @@ class T2VTab:
             task_manager.interrupt_device_tasks(device_id=device_id, module="minimax")
             logger.info("[T2V] User stopped generation for device '%s'", device_id)
             return (
-                build_progress_html("⚠️ 任務已被手動中斷"),
+                build_progress_html(TASK_MSG_INTERRUPTED_BY_USER),
                 gr.update(visible=True),
                 gr.update(visible=False),
             )

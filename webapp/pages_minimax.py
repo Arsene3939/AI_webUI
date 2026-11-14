@@ -27,6 +27,7 @@ from components.media_player import build_progress_html
 from components.history_gallery import get_history_dropdown_choices
 
 from views.minimax.view import MiniMaxView
+from ui_text import CHROME_PAGE_TITLE_MINIMAX
 
 from .shell import WebPageScaffold
 
@@ -41,7 +42,7 @@ class MiniMaxPage(WebPageScaffold):
     module_key = "minimax"
 
     def __init__(self):
-        super().__init__(title="🎬 MiniMax-H3 影片生成｜AI 影片工作平台")  # 瀏覽器分頁標題（任務 2）
+        super().__init__(title=CHROME_PAGE_TITLE_MINIMAX)  # 瀏覽器分頁標題（任務 2）
         self.minimax_view: Optional[MiniMaxView] = None
         self.history_dropdown = None
         self.all_restored_outputs: list = []

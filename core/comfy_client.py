@@ -21,6 +21,44 @@ from config import (
     OUTPUT_DIR,
     get_system_thresholds,
 )
+from ui_text import (
+    BACKEND_CLEAR_FAIL_MSG,
+    BACKEND_CLEAR_OK_MSG,
+    BACKEND_CLEAR_STATUS_MSG,
+    BACKEND_FREE_FAIL_MSG,
+    BACKEND_FREE_OK_MSG,
+    BACKEND_FREE_STATUS_MSG,
+    BACKEND_MON_FAILED_MSG,
+    BACKEND_MON_QUEUED,
+    BACKEND_MON_SAVING,
+    BACKEND_MON_SAMPLING,
+    BACKEND_MON_SUBMITTING,
+    BACKEND_MON_SUBMIT_FAILED,
+    BACKEND_MON_SUCCESS,
+    BACKEND_MON_WAITING,
+    BACKEND_MSG_FILE_MISSING,
+    BACKEND_MSG_QUEUE_REJECT,
+    BACKEND_MSG_UNKNOWN_ERROR,
+    BACKEND_RES_FAIL_PREFIX,
+    BACKEND_RES_REASON_GPU_UTIL,
+    BACKEND_RES_REASON_RAM,
+    BACKEND_RES_REASON_VRAM,
+    BACKEND_SERVER_BAD_STATUS_MSG,
+    BACKEND_SERVER_OFFLINE_MSG,
+    BACKEND_SERVER_ONLINE_MSG,
+    BACKEND_START_ALREADY_MSG,
+    BACKEND_START_LOADING_MSG,
+    BACKEND_START_NO_MAIN_MSG,
+    BACKEND_START_NO_PY_MSG,
+    BACKEND_START_READY_MSG,
+    BACKEND_START_SPAWN_FAIL_MSG,
+    BACKEND_STOP_ALREADY_OFF_MSG,
+    BACKEND_STOP_FAIL_MSG,
+    BACKEND_STOP_OK_MSG,
+    BACKEND_TIME_HMS,
+    BACKEND_TIME_MS,
+    BACKEND_TIME_S,
+)
 from utils.logger import get_logger
 
 logger = get_logger("ComfyClient")
@@ -37,10 +75,10 @@ def check_server(server_url: Optional[str] = None) -> Tuple[bool, str]:
     try:
         resp = requests.get(f"{server_url}/system_stats", timeout=3)
         if resp.status_code == 200:
-            return True, "🟢 ComfyUI 後端運作中"
-        return False, f"🔴 ComfyUI 回應異常 ({resp.status_code})"
+            return True, BACKEND_SERVER_ONLINE_MSG
+        return False, BACKEND_SERVER_BAD_STATUS_MSG.format(resp.status_code)
     except Exception:
-        return False, "🔴 ComfyUI 未連線 (離線中)"
+        return False, BACKEND_SERVER_OFFLINE_MSG
 
 
 def check_system_resources(
@@ -84,7 +122,7 @@ def check_system_resources(
             ram_gb = round(ram_bytes / (1024 ** 3), 2)
             stats["ram_available_gb"] = ram_gb
             if ram_gb <= min_ram_gb:
-                reasons.append(f"可用記憶體 {ram_gb} GB (需 > {min_ram_gb:g} GB)")
+                reasons.append(BACKEND_RES_REASON_RAM.format(ram_gb, min_ram_gb))
         except Exception as e:
             logger.warning("Failed to query system RAM: %s", e)
 
@@ -103,9 +141,9 @@ def check_system_resources(
             gpu_queried = True
 
             if util_pct >= max_gpu_util:
-                reasons.append(f"GPU 佔用率 {util_pct:.1f}% (需 < {max_gpu_util:g}%)")
+                reasons.append(BACKEND_RES_REASON_GPU_UTIL.format(util_pct, max_gpu_util))
             if free_vram_gb <= min_vram_gb:
-                reasons.append(f"可用 GPU 顯存 {free_vram_gb} GB (需 > {min_vram_gb:g} GB)")
+                reasons.append(BACKEND_RES_REASON_VRAM.format(free_vram_gb, min_vram_gb))
     except Exception as e:
         logger.debug("nvidia-smi query unavailable: %s", e)
 
@@ -119,12 +157,12 @@ def check_system_resources(
                 stats["gpu_free_vram_gb"] = free_vram_gb
                 stats["gpu_util_pct"] = 0.0
                 if free_vram_gb <= min_vram_gb:
-                    reasons.append(f"可用 GPU 顯存 {free_vram_gb} GB (需 > {min_vram_gb:g} GB)")
+                    reasons.append(BACKEND_RES_REASON_VRAM.format(free_vram_gb, min_vram_gb))
         except Exception as e:
             logger.debug("torch.cuda query failed: %s", e)
 
     if reasons:
-        msg = "⚠️ 伺服器運算資源不足：" + "；".join(reasons)
+        msg = BACKEND_RES_FAIL_PREFIX + "；".join(reasons)
         logger.warning("Resource check failed: %s", msg)
         return False, msg, stats
 
@@ -140,7 +178,7 @@ def start_comfyui_backend(server_url: Optional[str] = None, skip_resource_check:
     is_ok, _ = check_server(server_url)
     if is_ok:
         logger.info("ComfyUI backend already running at %s", server_url)
-        return True, "🟢 後端已經在運作中，無須重複啟動"
+        return True, BACKEND_START_ALREADY_MSG
 
     if not skip_resource_check:
         res_ok, res_msg, _ = check_system_resources()
@@ -150,10 +188,10 @@ def start_comfyui_backend(server_url: Optional[str] = None, skip_resource_check:
     main_py = os.path.join(COMFY_ROOT, "main.py")
     if not os.path.exists(main_py):
         logger.error("ComfyUI main script missing: %s", main_py)
-        return False, f"❌ 找不到 ComfyUI 核心主程式: {main_py}"
+        return False, BACKEND_START_NO_MAIN_MSG.format(main_py)
     if not os.path.exists(COMFY_PYTHON):
         logger.error("ComfyUI Python venv missing: %s", COMFY_PYTHON)
-        return False, f"❌ 找不到 Python 解譯器: {COMFY_PYTHON}"
+        return False, BACKEND_START_NO_PY_MSG.format(COMFY_PYTHON)
 
     cmd = [
         COMFY_PYTHON,
@@ -170,7 +208,7 @@ def start_comfyui_backend(server_url: Optional[str] = None, skip_resource_check:
         _COMFY_PROCESS = subprocess.Popen(cmd, cwd=COMFY_ROOT, creationflags=flags)
     except Exception as e:
         logger.error("Failed to spawn ComfyUI process: %s", e)
-        return False, f"❌ 啟動進程失敗: {str(e)}"
+        return False, BACKEND_START_SPAWN_FAIL_MSG.format(str(e))
 
     # Wait and verify up to 15 seconds
     for _ in range(15):
@@ -178,10 +216,10 @@ def start_comfyui_backend(server_url: Optional[str] = None, skip_resource_check:
         ok, _ = check_server(server_url)
         if ok:
             logger.info("ComfyUI backend verified online at %s", server_url)
-            return True, "🟢 後端已成功啟動並就緒！"
+            return True, BACKEND_START_READY_MSG
 
     logger.info("ComfyUI start command sent; still loading in background")
-    return True, "⏳ 已送出啟動指令，正在背景載入中，約需 5~10 秒..."
+    return True, BACKEND_START_LOADING_MSG
 
 
 def stop_comfyui_backend(server_url: Optional[str] = None) -> Tuple[bool, str]:
@@ -191,7 +229,7 @@ def stop_comfyui_backend(server_url: Optional[str] = None) -> Tuple[bool, str]:
     is_ok, _ = check_server(server_url)
     if not is_ok and _COMFY_PROCESS is None:
         logger.info("ComfyUI backend already offline")
-        return False, "🔴 後端本來就未在運作中。"
+        return False, BACKEND_STOP_ALREADY_OFF_MSG
 
     logger.info("Stopping ComfyUI backend (server_url: %s)...", server_url)
     # 1. Terminate tracked subprocess if available
@@ -224,10 +262,10 @@ def stop_comfyui_backend(server_url: Optional[str] = None) -> Tuple[bool, str]:
     is_ok, _ = check_server(server_url)
     if not is_ok:
         logger.info("ComfyUI backend stopped successfully.")
-        return True, "🛑 後端已成功關閉。"
+        return True, BACKEND_STOP_OK_MSG
     else:
         logger.warning("ComfyUI backend failed to terminate completely.")
-        return False, "⚠️ 嘗試關閉後端失敗，請手動檢查終端機。"
+        return False, BACKEND_STOP_FAIL_MSG
 
 
 def upload_media_file(file_path: str, server_url: Optional[str] = None) -> str:
@@ -235,7 +273,7 @@ def upload_media_file(file_path: str, server_url: Optional[str] = None) -> str:
     server_url = server_url or COMFY_SERVER_URL
     if not file_path or not os.path.exists(file_path):
         logger.error("Upload failed: file not found: %s", file_path)
-        raise FileNotFoundError(f"檔案不存在: {file_path}")
+        raise FileNotFoundError(BACKEND_MSG_FILE_MISSING.format(file_path))
 
     filename = os.path.basename(file_path)
     file_size = os.path.getsize(file_path)
@@ -263,10 +301,10 @@ def queue_prompt(prompt_graph: Dict[str, Any], client_id: str, server_url: Optio
     response.raise_for_status()
     data = response.json()
     if "prompt_id" not in data:
-        error_msg = data.get("error", "未知錯誤")
+        error_msg = data.get("error", BACKEND_MSG_UNKNOWN_ERROR)
         node_errors = data.get("node_errors", {})
         logger.error("ComfyUI rejected prompt execution: %s (%s)", error_msg, node_errors)
-        raise RuntimeError(f"ComfyUI 拒絕執行: {error_msg} ({json.dumps(node_errors, ensure_ascii=False)})")
+        raise RuntimeError(BACKEND_MSG_QUEUE_REJECT.format(error_msg, json.dumps(node_errors, ensure_ascii=False)))
     prompt_id = data["prompt_id"]
     logger.info("ComfyUI accepted prompt! Assigned prompt_id: %s", prompt_id)
     return prompt_id
@@ -407,19 +445,19 @@ def run_and_monitor(
     """
     is_ok, msg = check_server(server_url)
     if not is_ok:
-        yield 0.0, f"❌ {msg}", None
+        yield 0.0, BACKEND_MON_FAILED_MSG.format(msg), None
         return
 
     client_id = str(uuid.uuid4())
-    yield 0.05, "📤 正在提交任務...", None
+    yield 0.05, BACKEND_MON_SUBMITTING, None
 
     try:
         prompt_id = queue_prompt(prompt_graph, client_id, server_url)
     except Exception as e:
-        yield 0.0, f"❌ 提交失敗: {str(e)}", None
+        yield 0.0, BACKEND_MON_SUBMIT_FAILED.format(str(e)), None
         return
 
-    yield 0.1, f"⏳ 已加入排隊隊列 (ID: {prompt_id[:8]}...)", None
+    yield 0.1, BACKEND_MON_QUEUED.format(prompt_id[:8]), None
 
     # Track progress via polling & history as fallback
     start_time = time.time()
@@ -444,10 +482,10 @@ def run_and_monitor(
                             if filename and (filename.endswith(".mp4") or filename.endswith(".webm") or filename.endswith(".mkv")):
                                 subfolder = item.get("subfolder", "")
                                 folder_type = item.get("type", "output")
-                                yield 0.95, "📥 正在儲存影片...", None
+                                yield 0.95, BACKEND_MON_SAVING, None
                                 video_path = download_output_file(filename, subfolder, folder_type, server_url)
                                 total_elapsed = round(time.time() - start_time, 1)
-                                yield 1.0, f"✅ 影片生成成功！耗時 {total_elapsed} 秒", video_path
+                                yield 1.0, BACKEND_MON_SUCCESS.format(total_elapsed), video_path
                                 return
         except Exception:
             pass
@@ -465,16 +503,16 @@ def run_and_monitor(
                 mins = int((elapsed % 3600) // 60)
                 secs = int(elapsed % 60)
                 if hrs > 0:
-                    time_str = f"{hrs}小時{mins}分{secs}秒"
+                    time_str = BACKEND_TIME_HMS.format(hrs, mins, secs)
                 elif mins > 0:
-                    time_str = f"{mins}分{secs}秒"
+                    time_str = BACKEND_TIME_MS.format(mins, secs)
                 else:
-                    time_str = f"{secs}秒"
+                    time_str = BACKEND_TIME_S.format(secs)
 
                 if prompt_id in running:
-                    yield 0.3 + min(0.65, elapsed / 1800.0), f"⚡ 影片生成中... (耗時 {time_str})", None
+                    yield 0.3 + min(0.65, elapsed / 1800.0), BACKEND_MON_SAMPLING.format(time_str), None
                 elif prompt_id in pending:
-                    yield 0.15, f"⏳ 排隊中... (已等待 {time_str})", None
+                    yield 0.15, BACKEND_MON_WAITING.format(time_str), None
                 else:
                     time.sleep(1)
         except Exception:
@@ -494,11 +532,11 @@ def free_comfyui_memory(server_url: Optional[str] = None) -> Tuple[bool, str]:
         )
         if resp.status_code == 200:
             logger.info("ComfyUI memory freed successfully via /free endpoint.")
-            return True, "🟢 已成功釋放 GPU 顯存與卸載模型快取"
-        return False, f"⚠️ 釋放請求回傳狀態碼 {resp.status_code}"
+            return True, BACKEND_FREE_OK_MSG
+        return False, BACKEND_FREE_STATUS_MSG.format(resp.status_code)
     except Exception as e:
         logger.warning("Failed to call /free on ComfyUI: %s", e)
-        return False, f"❌ 釋放失敗: {str(e)}"
+        return False, BACKEND_FREE_FAIL_MSG.format(str(e))
 
 
 def clear_comfyui_queue(server_url: Optional[str] = None) -> Tuple[bool, str]:
@@ -512,11 +550,11 @@ def clear_comfyui_queue(server_url: Optional[str] = None) -> Tuple[bool, str]:
         )
         if resp.status_code == 200:
             logger.info("ComfyUI pending queue cleared successfully.")
-            return True, "🟢 已成功清空所有排隊等待中的任務"
-        return False, f"⚠️ 清空佇列回傳狀態碼 {resp.status_code}"
+            return True, BACKEND_CLEAR_OK_MSG
+        return False, BACKEND_CLEAR_STATUS_MSG.format(resp.status_code)
     except Exception as e:
         logger.warning("Failed to call /queue clear on ComfyUI: %s", e)
-        return False, f"❌ 清空失敗: {str(e)}"
+        return False, BACKEND_CLEAR_FAIL_MSG.format(str(e))
 
 
 def get_comfyui_queue_status(server_url: Optional[str] = None) -> Dict[str, Any]:

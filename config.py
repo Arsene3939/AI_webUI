@@ -683,3 +683,71 @@ def get_director_models(models_dir: Optional[str] = None) -> List[str]:
         models.remove(DEFAULT_DIRECTOR_MODEL)
         models.insert(0, DEFAULT_DIRECTOR_MODEL)
     return models
+
+
+# ============================================================================
+# 💬 Strata 智慧助理（本機 Strata 推理服務 — Spec 2026-11-03）
+# 「顯存自動讓位」設計已因 12GB 卡實測可讓量太少而作廢：/strata 頁改用與 comfy
+# 兩頁相同的模式——「啟動助理模型」按鈕＋既有系統資源檢查擋下，不另設新門檻。
+# ============================================================================
+STRATA_CLI_PATH = os.environ.get("STRATA_CLI_PATH", r"F:\Strata\terminal\current\bin\strata.cmd")
+# 後台啟動設定檔名稱（Strata 端 `strata runtime start --profile …` 用的 profile）
+STRATA_LAUNCH_PROFILE = os.environ.get("STRATA_LAUNCH_PROFILE", "launch-iq3_s-256k")
+# 啟動後等待助理上線的時間上限：載入模型約 1～2 分鐘
+STRATA_START_TIMEOUT_S = int(os.environ.get("STRATA_START_TIMEOUT_S", "180"))
+
+# 服務位址／金鑰：env 預設值 → 管理頁儲存值（outputs/strata_settings.json）覆寫，
+# 與 system_thresholds 相同的「檔案為生效值、常數為底片」持久化模式。
+STRATA_DEFAULT_BASE_URL = os.environ.get("STRATA_BASE_URL", "http://127.0.0.1:8080")
+STRATA_DEFAULT_API_KEY = os.environ.get("STRATA_API_KEY", "")
+STRATA_SETTINGS_FILE = os.path.join(OUTPUT_DIR, "strata_settings.json")
+_strata_settings_lock = threading.Lock()
+
+
+def _normalize_strata_base_url(url: str) -> str:
+    url = (url or "").strip().rstrip("/")
+    if url.endswith("/v1"):  # 管理員常把 OpenAI 端點整串貼上來；統一存根位址
+        url = url[:-3].rstrip("/")
+    return url
+
+
+def get_strata_settings() -> Dict[str, str]:
+    """目前生效的 Strata 連線設定：env 預設值 → 管理頁儲存值覆寫。回傳副本。"""
+    vals = {
+        "base_url": _normalize_strata_base_url(STRATA_DEFAULT_BASE_URL),
+        "api_key": STRATA_DEFAULT_API_KEY,
+    }
+    try:
+        if os.path.exists(STRATA_SETTINGS_FILE):
+            with _strata_settings_lock, open(STRATA_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            if isinstance(saved.get("base_url"), str) and saved["base_url"].strip():
+                vals["base_url"] = _normalize_strata_base_url(saved["base_url"])
+            if isinstance(saved.get("api_key"), str):
+                vals["api_key"] = saved["api_key"]
+    except Exception:
+        pass  # 檔案損毀靜默退回 env 預設，對話／導演永遠不會被設定檔打掛
+    return vals
+
+
+def set_strata_settings(base_url: str, api_key: str) -> Tuple[bool, str]:
+    """驗證後原子寫入設定檔；回 (ok, 給管理頁看的訊息)。存檔當下立即生效。"""
+    url = _normalize_strata_base_url(base_url)
+    if not url:
+        return False, "服務位址不能為空"
+    if not url.startswith(("http://", "https://")):
+        return False, "服務位址必須以 http:// 或 https:// 開頭"
+    try:
+        tmp = STRATA_SETTINGS_FILE + ".tmp"
+        with _strata_settings_lock:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"base_url": url, "api_key": (api_key or "").strip()}, f,
+                          ensure_ascii=False, indent=2)
+            os.replace(tmp, STRATA_SETTINGS_FILE)
+    except Exception as e:
+        return False, f"儲存失敗: {e}"
+    return True, "Strata 設定已儲存，立即生效"
+
+
+# 導演模型下拉的 Strata 選項（方案 B：選項一律出現在清單，實際能不能用在使用時檢查）
+DIRECTOR_STRATA_LABEL = os.environ.get("DIRECTOR_STRATA_LABEL", "Strata 智慧助理")

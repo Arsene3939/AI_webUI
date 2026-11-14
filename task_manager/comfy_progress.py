@@ -20,6 +20,26 @@ import requests
 import websockets
 
 import task_manager as _pkg
+from ui_text import (
+    TASK_MSG_BACKEND_OFFLINE,
+    TASK_MSG_COMPLETED,
+    TASK_MSG_COMPOSITING,
+    TASK_MSG_GEN_FAILED,
+    TASK_MSG_INTERRUPTED_LOOP,
+    TASK_MSG_LOADING_MODELS,
+    TASK_MSG_QUEUED,
+    TASK_MSG_QUEUED_WAITED,
+    TASK_MSG_SAVING,
+    TASK_MSG_SAMPLING_PLAIN,
+    TASK_MSG_SAMPLING_PLAIN_ELAPSED,
+    TASK_MSG_SAMPLING_STEPS,
+    TASK_MSG_SAMPLING_STEPS_ELAPSED,
+    TASK_MSG_SUBMITTING,
+    TASK_MSG_SUBMIT_FAILED,
+    TASK_TIME_HMS,
+    TASK_TIME_MS,
+    TASK_TIME_S,
+)
 from utils.logger import get_logger
 
 from .models import Task
@@ -83,9 +103,9 @@ def ws_listener(
                                     elif any(k in node_str for k in ["sampler", "sampling", "ksampler"]):
                                         task.stage = "sampling"
                                         if task.total_steps > 0:
-                                            task.message = f"⚡ 影片生成中: {task.step}/{task.total_steps} 步"
+                                            task.message = TASK_MSG_SAMPLING_STEPS.format(task.step, task.total_steps)
                                         else:
-                                            task.message = "⚡ 影片生成中..."
+                                            task.message = TASK_MSG_SAMPLING_PLAIN
                                     elif task.stage not in ("sampling", "postprocessing"):
                                         task.stage = "preprocessing"
         except Exception as e:
@@ -114,7 +134,7 @@ def monitor_worker(
 
     task.status = "running"
     task.stage = "preprocessing"
-    task.message = "⚡ 前處理中：正在提交任務至後端..."
+    task.message = TASK_MSG_SUBMITTING
     task.progress = 0.08
     logger.info("[Task %s] Submitting workflow graph to ComfyUI (%s)...", task.task_id, server_url)
 
@@ -127,7 +147,7 @@ def monitor_worker(
         task.prompt_id = prompt_id
         task.status = "queued"
         task.stage = "pending"
-        task.message = "⏳ 排隊中..."
+        task.message = TASK_MSG_QUEUED
         task.progress = 0.15
         logger.info("[Task %s] Prompt queued successfully! Assigned ComfyUI prompt_id: %s", task.task_id, prompt_id)
     except Exception as e:
@@ -136,7 +156,7 @@ def monitor_worker(
             return
         task.status = "failed"
         task.stage = "failed"
-        task.message = f"❌ 提交失敗: {str(e)}"
+        task.message = TASK_MSG_SUBMIT_FAILED.format(str(e))
         save()
         logger.error("[Task %s] Failed to queue prompt to ComfyUI: %s", task.task_id, e)
         return
@@ -160,7 +180,7 @@ def monitor_worker(
         if task.cancel_event.is_set() or task.status == "interrupted":
             task.status = "interrupted"
             task.stage = "interrupted"
-            task.message = "⚠️ 任務已中斷"
+            task.message = TASK_MSG_INTERRUPTED_LOOP
             stop_ws.set()
             save()
             logger.info("[Task %s] Interrupted.", task.task_id)
@@ -174,11 +194,11 @@ def monitor_worker(
         mins = int((elapsed % 3600) // 60)
         secs = int(elapsed % 60)
         if hrs > 0:
-            time_str = f"{hrs}小時{mins}分{secs}秒"
+            time_str = TASK_TIME_HMS.format(hrs, mins, secs)
         elif mins > 0:
-            time_str = f"{mins}分{secs}秒"
+            time_str = TASK_TIME_MS.format(mins, secs)
         else:
-            time_str = f"{secs}秒"
+            time_str = TASK_TIME_S.format(secs)
 
         # Log stage changes
         if task.stage != last_logged_stage:
@@ -210,7 +230,7 @@ def monitor_worker(
                                 subfolder = it.get("subfolder", "")
                                 folder_type = it.get("type", "output")
                                 task.stage = "postprocessing"
-                                task.message = f"⚡ 後處理中：正在儲存影片... (耗時 {time_str})"
+                                task.message = TASK_MSG_SAVING.format(time_str)
                                 task.progress = 0.95
                                 logger.info("[Task %s] Output detected in ComfyUI: %s. Downloading...", task.task_id, fn)
                                 local_path = _pkg.download_output_file(fn, subfolder, folder_type, server_url)
@@ -219,7 +239,7 @@ def monitor_worker(
                                 task.stage = "completed"
                                 task.progress = 1.0
                                 task.completed_at = time.time()
-                                task.message = f"✅ 影片生成完成！耗時 {time_str}"
+                                task.message = TASK_MSG_COMPLETED.format(time_str)
                                 stop_ws.set()
                                 save()
                                 logger.info("[Task %s] Completed! Saved to: %s (Total time: %s)", task.task_id, local_path, time_str)
@@ -229,7 +249,7 @@ def monitor_worker(
                 if status_info.get("status_str") == "error":
                     task.status = "failed"
                     task.stage = "failed"
-                    task.message = "❌ 生成失敗，請查看後端錯誤記錄。"
+                    task.message = TASK_MSG_GEN_FAILED
                     stop_ws.set()
                     save()
                     logger.error("[Task %s] ComfyUI reported execution error: %s", task.task_id, status_info)
@@ -249,27 +269,27 @@ def monitor_worker(
                 if task.total_steps > 0 and task.step >= task.total_steps:
                     task.status = "running"
                     task.stage = "postprocessing"
-                    task.message = f"⚡ 後處理中：正在合成影片... (耗時 {time_str})"
+                    task.message = TASK_MSG_COMPOSITING.format(time_str)
                 elif task.stage == "postprocessing":
                     task.status = "running"
-                    task.message = f"⚡ 後處理中：正在合成影片... (耗時 {time_str})"
+                    task.message = TASK_MSG_COMPOSITING.format(time_str)
                 elif task.stage == "sampling" or (task.total_steps > 0 and task.step > 0):
                     task.status = "running"
                     task.stage = "sampling"
                     if task.total_steps > 0:
-                        task.message = f"⚡ 影片生成中: {task.step}/{task.total_steps} 步 (耗時 {time_str})"
+                        task.message = TASK_MSG_SAMPLING_STEPS_ELAPSED.format(task.step, task.total_steps, time_str)
                     else:
-                        task.message = f"⚡ 影片生成中... (耗時 {time_str})"
+                        task.message = TASK_MSG_SAMPLING_PLAIN_ELAPSED.format(time_str)
                 elif task.prompt_id in running:
                     task.status = "running"
                     task.stage = "preprocessing"
                     task.progress = min(0.95, 0.25 + (elapsed / 1800.0) * 0.70)
-                    task.message = f"⚡ 前處理中：正在載入模型... (耗時 {time_str})"
+                    task.message = TASK_MSG_LOADING_MODELS.format(time_str)
                 elif task.prompt_id in pending:
                     task.status = "queued"
                     task.stage = "pending"
                     task.progress = 0.18
-                    task.message = f"⏳ 排隊中... (已等待 {time_str})"
+                    task.message = TASK_MSG_QUEUED_WAITED.format(time_str)
         except Exception as e:
             logger.debug("[Task %s] Queue poll exception: %s", task.task_id, e)
 
@@ -281,7 +301,7 @@ def monitor_worker(
             if backend_failures >= BACKEND_FAILURE_LIMIT:
                 task.status = "interrupted"
                 task.stage = "interrupted"
-                task.message = "⚠️ 後端模型已離線，任務已中止（請確認後端後重新提交）"
+                task.message = TASK_MSG_BACKEND_OFFLINE
                 stop_ws.set()
                 save()
                 logger.error(

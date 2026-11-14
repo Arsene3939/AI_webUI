@@ -6,6 +6,16 @@ from typing import Optional, Any
 import gradio as gr
 from core.base_admin_tab import BaseAdminTab
 from core.admin_manager import AdminManager
+from ui_text import (
+    ADMIN_CLEAR_QUEUE_BTN,
+    ADMIN_COMFY_BACKEND_SECTION_MD,
+    ADMIN_COMFY_QUEUE_SECTION_MD,
+    ADMIN_COMFY_TAB_TITLE,
+    ADMIN_INTERRUPT_TASK_BTN,
+    ADMIN_PURGE_VRAM_BTN,
+    ADMIN_REFRESH_QUEUE_BTN,
+    ADMIN_RESTART_BACKEND_BTN,
+)
 
 
 class ComfyUIAdminTab(BaseAdminTab):
@@ -16,7 +26,7 @@ class ComfyUIAdminTab(BaseAdminTab):
     - Real-time ComfyUI Queue monitor with Interrupt and Clear queue buttons
     """
 
-    def __init__(self, tab_title: str = "⚙️ ComfyUI 管理專區"):
+    def __init__(self, tab_title: str = ADMIN_COMFY_TAB_TITLE):
         super().__init__(tab_title=tab_title)
         self.free_vram_btn: Optional[gr.Button] = None
         self.restart_backend_btn: Optional[gr.Button] = None
@@ -27,17 +37,17 @@ class ComfyUIAdminTab(BaseAdminTab):
 
     def render_custom_content(self, session_ctx: Any) -> None:
         """Injects ComfyUI process & queue controls, then calls render_comfy_content hook."""
-        gr.Markdown("### ⚡ ComfyUI 後端與顯存控制")
+        gr.Markdown(ADMIN_COMFY_BACKEND_SECTION_MD)
         with gr.Row():
-            self.free_vram_btn = gr.Button("🧹 立即釋放 GPU 顯存 (Purge VRAM)", variant="secondary", scale=1)
-            self.restart_backend_btn = gr.Button("🔄 重啟 ComfyUI 後端進程", variant="secondary", scale=1)
+            self.free_vram_btn = gr.Button(ADMIN_PURGE_VRAM_BTN, variant="secondary", scale=1)
+            self.restart_backend_btn = gr.Button(ADMIN_RESTART_BACKEND_BTN, variant="secondary", scale=1)
 
-        gr.Markdown("### 📋 ComfyUI 生成佇列 (Queue Status)")
+        gr.Markdown(ADMIN_COMFY_QUEUE_SECTION_MD)
         self.queue_html = gr.HTML(AdminManager.build_admin_queue_html())
         with gr.Row():
-            self.cancel_current_btn = gr.Button("🛑 中斷當前運算任務", variant="stop", scale=2)
-            self.clear_queue_btn = gr.Button("🗑️ 清空所有等待中排隊佇列", variant="secondary", scale=2)
-            self.refresh_queue_btn = gr.Button("🔄 刷新佇列狀態", variant="secondary", scale=1)
+            self.cancel_current_btn = gr.Button(ADMIN_INTERRUPT_TASK_BTN, variant="stop", scale=2)
+            self.clear_queue_btn = gr.Button(ADMIN_CLEAR_QUEUE_BTN, variant="secondary", scale=2)
+            self.refresh_queue_btn = gr.Button(ADMIN_REFRESH_QUEUE_BTN, variant="secondary", scale=1)
 
         # Hook for further child customization (e.g. MiniMax task history, Upscaler cache)
         self.render_comfy_content(session_ctx)

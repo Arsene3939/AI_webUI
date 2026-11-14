@@ -13,16 +13,28 @@ from typing import Any, Optional
 
 import gradio as gr
 
-from config import get_director_models
+from config import DIRECTOR_STRATA_LABEL, get_director_models
 from core.director_client import call_director
+from ui_text import (
+    DIRECTOR_NOT_READY,
+    DIRECTOR_NEED_BRIEF,
+    DIRECTOR_OK_ORIGINAL_HTML,
+    DIRECTOR_OPTIMIZE_BTN,
+    DIRECTOR_THINKING,
+    DIRECTOR_THINKING_HTML,
+    DIRECTOR_WARN_HTML,
+)
 
-NOT_READY = "導演尚未就緒：管理員放好導演模型後，選項會在「⚙️ 進階參數」自動出現"
-THINKING = "🎬 導演努力思考中…"
+# 方案 B（Spec 2026-11-03）：沒有 ComfyUI 導演模型時清單仍完整（Strata 選項常在），
+# 這行只是「想多用其他導演模型」時的補位提示。
+# NOT_READY／THINKING 保留模組層級綁定（單元測試直接以 db.NOT_READY 引用）。
+NOT_READY = DIRECTOR_NOT_READY
+THINKING = DIRECTOR_THINKING
 
 
 def warn_html(text: str) -> str:
     # 狀態行是 HTML：任何來自模型/後端/使用者原文的片段都先跳脫，避免注入。
-    return f'<div class="director-warn">⚠️ {html.escape(str(text), quote=False)}</div>'
+    return DIRECTOR_WARN_HTML.format(html.escape(str(text), quote=False))
 
 
 def refresh_model_choices(current, last_seen):
@@ -34,9 +46,14 @@ def refresh_model_choices(current, last_seen):
     models = get_director_models()
     if models == list(last_seen):
         return gr.update(), gr.update(), last_seen
-    keep = current if current in models else (models[0] if models else None)
+    # Strata 選項常在清單內（方案 B）；掃描狀態只追蹤 ComfyUI 模型清單。
+    choices = models + [DIRECTOR_STRATA_LABEL]
+    if current in models or current == DIRECTOR_STRATA_LABEL:
+        keep = current
+    else:
+        keep = models[0] if models else DIRECTOR_STRATA_LABEL
     return (
-        gr.update(choices=models, value=keep, interactive=bool(models)),
+        gr.update(choices=choices, value=keep, interactive=True),
         gr.update(value="" if models else warn_html(NOT_READY)),
         models,
     )
@@ -54,7 +71,7 @@ class DirectorBlockComponent:
         # 模型清單即時偵測：每 5 秒重掃一次目錄（見 register_events 的
         # 「清單變了才更新前端」邏輯；沒變就不會觸發任何前端刷新）
         self.model_timer = gr.Timer(value=5.0)
-        self.generate_btn = gr.Button("✨ 優化提示詞", variant="secondary")
+        self.generate_btn = gr.Button(DIRECTOR_OPTIMIZE_BTN, variant="secondary")
         self.status = gr.HTML(
             warn_html(NOT_READY) if not models else "",
             elem_classes=["backend-status-box"],
@@ -69,11 +86,11 @@ class DirectorBlockComponent:
         def run_director(prompt_text, image_path, model):
             original = (prompt_text or "").strip()
             if not original:
-                yield warn_html("請先在提示詞欄寫下你的想法，再讓導演幫你打磨"), gr.update()
+                yield warn_html(DIRECTOR_NEED_BRIEF), gr.update()
                 return
             # streaming handler: first yield paints the busy state instantly,
             # then the blocking director call runs and we paint the result.
-            yield f'<div class="director-thinking">{THINKING}</div>', gr.update()
+            yield DIRECTOR_THINKING_HTML, gr.update()
             ok, _note, result = call_director(
                 brief=original,
                 image_path=image_path,
@@ -81,8 +98,7 @@ class DirectorBlockComponent:
             )
             if ok:
                 yield (
-                    f'<div class="director-ok">✅ 提示詞優化完成，原提示詞：'
-                    f'{html.escape(original, quote=False)}</div>',
+                    DIRECTOR_OK_ORIGINAL_HTML.format(html.escape(original, quote=False)),
                     gr.update(value=result),
                 )
             else:

@@ -17,6 +17,37 @@ from config import get_upscale_models, get_server_status, SERVER_STATUS_UPDATING
 from core.comfy_client import upload_media_file, check_server
 from task_manager import task_manager, Task
 from utils.logger import get_logger
+from ui_text import (
+    UPSCALER_ADVANCED_ACCORDION,
+    UPSCALER_BITDEPTH_10_LABEL,
+    UPSCALER_BITDEPTH_8_LABEL,
+    UPSCALER_BITDEPTH_INFO,
+    UPSCALER_BITDEPTH_LABEL,
+    UPSCALER_FORMAT_AUTO,
+    UPSCALER_FORMAT_LABEL,
+    UPSCALER_GENERATE_BTN,
+    UPSCALER_HEADING,
+    UPSCALER_INPUT_VIDEO_LABEL,
+    UPSCALER_INTRO,
+    UPSCALER_MODEL_LABEL,
+    UPSCALER_MSG_NO_MODEL,
+    UPSCALER_MSG_NO_VIDEO,
+    UPSCALER_MSG_SERVER_OFFLINE,
+    UPSCALER_MSG_SERVER_UPDATING,
+    UPSCALER_MSG_STOPPED,
+    UPSCALER_MSG_UPLOADING,
+    UPSCALER_MSG_UPLOAD_FAILED,
+    UPSCALER_OUTPUT_VIDEO_LABEL,
+    UPSCALER_REFRESH_BTN,
+    UPSCALER_SCALE_HALF,
+    UPSCALER_SCALE_INFO,
+    UPSCALER_SCALE_LABEL,
+    UPSCALER_SCALE_ORIGINAL,
+    UPSCALER_SCALE_QUARTER,
+    UPSCALER_STOP_BTN,
+    UPSCALER_TAB_HISTORY,
+    UPSCALER_TAB_UPSCALE,
+)
 
 logger = get_logger("UpscalerView")
 
@@ -38,33 +69,33 @@ def handle_upscale_generate(
         device_id = f"dev_{uuid.uuid4().hex[:6]}"
 
     if get_server_status() == SERVER_STATUS_UPDATING:
-        yield build_progress_html("⚠️ 伺服器維護/更新中，暫停提交放大任務"), None, current_session_task, device_id
+        yield build_progress_html(UPSCALER_MSG_SERVER_UPDATING), None, current_session_task, device_id
         return
 
     if not video_file:
-        yield build_progress_html("❌ 請先上傳欲放大的來源影片"), None, current_session_task, device_id
+        yield build_progress_html(UPSCALER_MSG_NO_VIDEO), None, current_session_task, device_id
         return
 
     if not model:
-        yield build_progress_html("❌ 請先選擇超解析模型"), None, current_session_task, device_id
+        yield build_progress_html(UPSCALER_MSG_NO_MODEL), None, current_session_task, device_id
         return
 
     # Check ComfyUI server online
     server_ok, msg = check_server()
     if not server_ok:
-        yield build_progress_html(f"❌ 後端伺服器離線: {msg}"), None, current_session_task, device_id
+        yield build_progress_html(UPSCALER_MSG_SERVER_OFFLINE.format(msg)), None, current_session_task, device_id
         return
 
     # No preemption: tasks now queue politely through the serial dispatcher,
     # so submitting an upscale job no longer kills other devices' or modules' work.
 
-    yield build_progress_html("⚡ 前處理中：正在上傳影片至 ComfyUI 後端..."), None, current_session_task, device_id
+    yield build_progress_html(UPSCALER_MSG_UPLOADING), None, current_session_task, device_id
 
     try:
         uploaded_fn = upload_media_file(video_file)
     except Exception as e:
         logger.error("Failed to upload video to ComfyUI: %s", e)
-        yield build_progress_html(f"❌ 影片上傳失敗: {str(e)}"), None, current_session_task, device_id
+        yield build_progress_html(UPSCALER_MSG_UPLOAD_FAILED.format(str(e))), None, current_session_task, device_id
         return
 
     # 進階輸出參數（Spec 任務 6）：0/None 都代表不額外縮放
@@ -133,64 +164,64 @@ class UpscalerView(ComfyUIBaseView):
         # the radio-switched minimax view).
         with gr.Column() as self.container:
             with gr.Tabs() as self.tabs:
-                with gr.Tab("🔍 影片超解析放大"):
-                    gr.Markdown("### 🔍 影片超解析放大 (Video Resolution Upscaler)")
-                    gr.Markdown("上傳來源影片，使用神經網路超解析模型無損放大影片畫質，自動保留原始音訊與影格率。")
+                with gr.Tab(UPSCALER_TAB_UPSCALE):
+                    gr.Markdown(UPSCALER_HEADING)
+                    gr.Markdown(UPSCALER_INTRO)
 
                     with gr.Row():
                         with gr.Column(scale=1):
-                            self.input_video = gr.Video(label="上傳來源影片", height=280)
+                            self.input_video = gr.Video(label=UPSCALER_INPUT_VIDEO_LABEL, height=280)
 
                             with gr.Row():
                                 self.upscale_model = gr.Dropdown(
                                     choices=model_choices,
                                     value=default_model,
-                                    label="超解析模型 (upscale_models)",
+                                    label=UPSCALER_MODEL_LABEL,
                                     scale=4,
                                     filterable=False,
                                     allow_custom_value=False,
                                 )
                                 self.refresh_model_btn = gr.Button(
-                                    "🔄 重新整理",
+                                    UPSCALER_REFRESH_BTN,
                                     size="sm",
                                     scale=1,
                                     variant="secondary",
                                 )
 
                             # 進階輸出設定（Spec 2026-10-31 任務 6；預設值＝舊版行為）
-                            with gr.Accordion("🎛️ 進階輸出設定", open=False):
+                            with gr.Accordion(UPSCALER_ADVANCED_ACCORDION, open=False):
                                 with gr.Row():
                                     self.output_scale = gr.Dropdown(
                                         choices=[
-                                            ("模型原生倍率（不額外縮放）", 0),
-                                            ("輸出再縮小至 1/2", 0.5),
-                                            ("輸出再縮小至 1/4", 0.25),
+                                            (UPSCALER_SCALE_ORIGINAL, 0),
+                                            (UPSCALER_SCALE_HALF, 0.5),
+                                            (UPSCALER_SCALE_QUARTER, 0.25),
                                         ],
                                         value=0,
-                                        label="輸出縮放",
-                                        info="本機模型都是 4 倍放大；縮小輸出可加快後續處理並減小檔案",
+                                        label=UPSCALER_SCALE_LABEL,
+                                        info=UPSCALER_SCALE_INFO,
                                         filterable=False,
                                     )
                                 with gr.Row():
                                     self.output_format = gr.Radio(
-                                        choices=[("自動（推薦）", "auto"), ("MP4", "mp4")],
+                                        choices=[(UPSCALER_FORMAT_AUTO, "auto"), ("MP4", "mp4")],
                                         value="auto",
-                                        label="輸出格式",
+                                        label=UPSCALER_FORMAT_LABEL,
                                     )
                                     self.bit_depth = gr.Radio(
-                                        choices=[("8-bit（兼容性最佳）", 8), ("10-bit（漸層更平滑）", 10)],
+                                        choices=[(UPSCALER_BITDEPTH_8_LABEL, 8), (UPSCALER_BITDEPTH_10_LABEL, 10)],
                                         value=8,
-                                        label="位元深度",
-                                        info="10-bit 色彩漸層較不易出現色帶，部分播放器可能不支援",
+                                        label=UPSCALER_BITDEPTH_LABEL,
+                                        info=UPSCALER_BITDEPTH_INFO,
                                     )
 
                             self.generate_btn = gr.Button(
-                                "🚀 開始影片超解析放大",
+                                UPSCALER_GENERATE_BTN,
                                 variant="primary",
                                 elem_classes=["primary-btn"],
                             )
                             self.stop_btn = gr.Button(
-                                "🛑 中斷放大任務",
+                                UPSCALER_STOP_BTN,
                                 variant="stop",
                                 visible=False,
                                 elem_classes=["primary-btn"],
@@ -198,9 +229,9 @@ class UpscalerView(ComfyUIBaseView):
 
                         with gr.Column(scale=1):
                             self.status = gr.HTML(value=build_progress_html(None))
-                            self.output_video = gr.Video(label="超解析成果影片", height=340)
+                            self.output_video = gr.Video(label=UPSCALER_OUTPUT_VIDEO_LABEL, height=340)
 
-                with gr.Tab("📜 放大紀錄"):
+                with gr.Tab(UPSCALER_TAB_HISTORY):
                     self.history_gallery.render()
 
                 self.admin_tab.render(session_ctx)
@@ -262,7 +293,7 @@ class UpscalerView(ComfyUIBaseView):
             # Module-scoped: stopping an upscale job must not touch minimax tasks
             task_manager.interrupt_device_tasks(device_id, module="upscaler")
             return (
-                build_progress_html("⚠️ 放大任務已中斷", 0.0),
+                build_progress_html(UPSCALER_MSG_STOPPED, 0.0),
                 gr.update(visible=True),
                 gr.update(visible=False),
             )

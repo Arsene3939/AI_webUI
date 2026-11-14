@@ -31,6 +31,76 @@ from core.comfy_client import (
     clear_comfyui_queue,
 )
 from task_manager import task_manager
+from ui_text import (
+    ADMIN_BADGE_OK_HTML,
+    ADMIN_BADGE_UPDATING_HTML,
+    ADMIN_CANCEL_FAIL_MSG,
+    ADMIN_CANCEL_NONE_MSG,
+    ADMIN_CANCEL_OK_MSG,
+    ADMIN_CLEANED_MSG,
+    ADMIN_DEVICES_EMPTY_HTML,
+    ADMIN_DEVICES_THEAD_HTML,
+    ADMIN_FILTER_ALL_DEVICES,
+    ADMIN_FILTER_ALL_STATUS,
+    ADMIN_HW_SUB_FREE,
+    ADMIN_HW_SUB_DISK,
+    ADMIN_HW_SUB_GPU,
+    ADMIN_HW_TITLE_DISK,
+    ADMIN_HW_TITLE_GPU,
+    ADMIN_HW_TITLE_RAM,
+    ADMIN_HW_TITLE_VRAM,
+    ADMIN_HW_VAL_DISK,
+    ADMIN_HW_VAL_USAGE,
+    ADMIN_INTERRUPTED_MSG,
+    ADMIN_IP_ADDED_MSG,
+    ADMIN_IP_BAD_FORMAT_MSG,
+    ADMIN_IP_EMPTY_MSG,
+    ADMIN_IP_EXISTS_MSG,
+    ADMIN_IP_IS_LOCAL_MSG,
+    ADMIN_IP_LIST_HTML,
+    ADMIN_IP_LOCAL_CHIPS_HTML,
+    ADMIN_IP_NONE_CHIP_HTML,
+    ADMIN_IP_CHIP_ADMIN_HTML,
+    ADMIN_IP_NOT_IN_LIST_MSG,
+    ADMIN_IP_PICK_MSG,
+    ADMIN_IP_REMOVE_PLACEHOLDER,
+    ADMIN_IP_REMOVED_MSG,
+    ADMIN_NO_PERM_LOCAL_MSG,
+    ADMIN_NO_PERM_MSG,
+    ADMIN_NO_PERM_SHUTDOWN_MSG,
+    ADMIN_NO_PERM_CANCEL_MSG,
+    ADMIN_NO_PERM_THRESHOLDS_MSG,
+    ADMIN_QUEUE_IDLE_HTML,
+    ADMIN_QUEUE_NO_TASK_MSG,
+    ADMIN_QUEUE_OFFLINE_HTML,
+    ADMIN_QUEUE_PENDING_EMPTY_HTML,
+    ADMIN_QUEUE_PENDING_HTML,
+    ADMIN_QUEUE_RUNNING_HTML,
+    ADMIN_RESTART_BUSY_MSG,
+    ADMIN_STATE_OK_TEXT,
+    ADMIN_SHUTDOWN_OS_NOTICE,
+    ADMIN_SHUTDOWN_FAIL_MSG,
+    ADMIN_SHUTDOWN_SCHEDULED_MSG,
+    ADMIN_STATUS_DONE_LABEL,
+    ADMIN_STATUS_FAILED_LABEL,
+    ADMIN_STATUS_QUEUED_LABEL,
+    ADMIN_STATUS_RUNNING_LABEL,
+    ADMIN_TASK_CHOICE_FMT,
+    ADMIN_TASK_DETAIL_MD,
+    ADMIN_TASK_DELETED_MSG,
+    ADMIN_TASK_ICON_DONE,
+    ADMIN_TASK_ICON_FAILED,
+    ADMIN_TASK_ICON_QUEUED,
+    ADMIN_TASK_ICON_RUNNING,
+    ADMIN_TASK_MISSING_MSG,
+    ADMIN_TASK_PICK_MSG,
+    ADMIN_NO_TASKS_PLACEHOLDER,
+    ADMIN_RESTORE_OK_BTN,
+    ADMIN_TOGGLE_OK_MD,
+    ADMIN_TOGGLE_TO_MAINT_BTN,
+    ADMIN_THRESHOLDS_SAVED_MD,
+    COMMON_MAINT_BTN,
+)
 from utils.logger import get_logger
 
 logger = get_logger("AdminManager")
@@ -139,101 +209,76 @@ class AdminManager:
 
     @classmethod
     def build_admin_status_badge(cls) -> str:
-        status = get_server_status()
-        if status == SERVER_STATUS_OK:
-            return (
-                '<div style="padding: 8px 16px; border-radius: 8px; background: #ecfdf5; '
-                'border: 1.5px solid #6ee7b7; color: #047857; font-weight: 700; font-size: 0.95rem;">'
-                '🟢 系統狀態：正常服務中 (OK)'
-                '</div>'
-            )
-        return (
-            '<div style="padding: 8px 16px; border-radius: 8px; background: #fff1f2; '
-            'border: 1.5px solid #fda4af; color: #e11d48; font-weight: 700; font-size: 0.95rem;">'
-            '🔧 系統狀態：維護更新中 (UPDATING)'
-            '</div>'
-        )
+        if get_server_status() == SERVER_STATUS_OK:
+            return ADMIN_BADGE_OK_HTML
+        return ADMIN_BADGE_UPDATING_HTML
 
     @classmethod
     def build_admin_ip_list_html(cls) -> str:
         admin_ips = cls.load_admin_ip_list()
         lan = get_lan_ip()
 
-        default_chips = f"""
-        <span style="display: inline-block; background: #e0f2fe; color: #0369a1; padding: 4px 10px; border-radius: 6px; font-family: monospace; font-size: 0.88rem; font-weight: 600; margin: 3px;">127.0.0.1 (本機)</span>
-        <span style="display: inline-block; background: #e0f2fe; color: #0369a1; padding: 4px 10px; border-radius: 6px; font-family: monospace; font-size: 0.88rem; font-weight: 600; margin: 3px;">{lan} (本機內網)</span>
-        """
+        default_chips = ADMIN_IP_LOCAL_CHIPS_HTML.format(lan)
 
         if not admin_ips:
-            custom_chips = '<span style="color: #64748b; font-size: 0.88rem; margin-left: 6px;">(目前尚未加入其他管理員 IP)</span>'
+            custom_chips = ADMIN_IP_NONE_CHIP_HTML
         else:
-            chips = []
-            for ip in admin_ips:
-                chips.append(
-                    f'<span style="display: inline-block; background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; padding: 4px 10px; border-radius: 6px; font-family: monospace; font-size: 0.88rem; font-weight: 600; margin: 3px;">{ip}</span>'
-                )
+            chips = [ADMIN_IP_CHIP_ADMIN_HTML.format(ip) for ip in admin_ips]
             custom_chips = "".join(chips)
 
-        return f"""
-        <div style="background: #ffffff; border: 1.5px solid #e2e8f0; border-radius: 8px; padding: 14px 18px; line-height: 1.8;">
-            <div style="font-size: 0.85rem; color: #475569; font-weight: 600; margin-bottom: 6px;">固定本機權限：</div>
-            <div>{default_chips}</div>
-            <div style="font-size: 0.85rem; color: #475569; font-weight: 600; margin-top: 10px; margin-bottom: 6px;">手動授權的管理員名單：</div>
-            <div>{custom_chips}</div>
-        </div>
-        """
+        return ADMIN_IP_LIST_HTML.format(default_chips, custom_chips)
 
     @classmethod
     def get_admin_ip_remove_choices(cls) -> List[str]:
         ips = cls.load_admin_ip_list()
-        return ips if ips else ["— 目前無可移除的管理員 IP —"]
+        return ips if ips else [ADMIN_IP_REMOVE_PLACEHOLDER]
 
     @classmethod
     def on_add_admin_ip(cls, new_ip: str, request: gr.Request = None):
         if not cls.is_super_user(request):
-            return cls.build_admin_ip_list_html(), gr.update(), "⚠️ 權限不足"
+            return cls.build_admin_ip_list_html(), gr.update(), ADMIN_NO_PERM_MSG
 
         ip_clean = (new_ip or "").strip()
         if not ip_clean:
-            return cls.build_admin_ip_list_html(), gr.update(choices=cls.get_admin_ip_remove_choices()), "⚠️ 請輸入有效的 IP 位址"
+            return cls.build_admin_ip_list_html(), gr.update(choices=cls.get_admin_ip_remove_choices()), ADMIN_IP_EMPTY_MSG
 
         if not cls.is_valid_ip_address(ip_clean):
-            return cls.build_admin_ip_list_html(), gr.update(choices=cls.get_admin_ip_remove_choices()), f"❌ '{ip_clean}' 不是正確的 IP 格式 (例如 192.168.0.11)"
+            return cls.build_admin_ip_list_html(), gr.update(choices=cls.get_admin_ip_remove_choices()), ADMIN_IP_BAD_FORMAT_MSG.format(ip_clean)
 
         local_defaults = {"127.0.0.1", "::1", "localhost", get_lan_ip()}
         if ip_clean in local_defaults:
-            return cls.build_admin_ip_list_html(), gr.update(choices=cls.get_admin_ip_remove_choices()), f"ℹ️ '{ip_clean}' 本身已具有本機管理員權限，無需重複加入"
+            return cls.build_admin_ip_list_html(), gr.update(choices=cls.get_admin_ip_remove_choices()), ADMIN_IP_IS_LOCAL_MSG.format(ip_clean)
 
         current_list = cls.load_admin_ip_list()
         if ip_clean in current_list:
-            return cls.build_admin_ip_list_html(), gr.update(choices=cls.get_admin_ip_remove_choices()), f"ℹ️ IP '{ip_clean}' 已在管理員名單中"
+            return cls.build_admin_ip_list_html(), gr.update(choices=cls.get_admin_ip_remove_choices()), ADMIN_IP_EXISTS_MSG.format(ip_clean)
 
         current_list.append(ip_clean)
         cls.save_admin_ip_list(current_list)
         logger.info("[Admin] Added '%s' to admin IP list", ip_clean)
         rem_choices = cls.get_admin_ip_remove_choices()
-        return cls.build_admin_ip_list_html(), gr.update(choices=rem_choices, value=rem_choices[0] if rem_choices else ""), f"✅ 已成功將 IP '{ip_clean}' 加入管理員名單"
+        return cls.build_admin_ip_list_html(), gr.update(choices=rem_choices, value=rem_choices[0] if rem_choices else ""), ADMIN_IP_ADDED_MSG.format(ip_clean)
 
     @classmethod
     def on_remove_admin_ip(cls, target_ip: str, request: gr.Request = None):
         if not cls.is_super_user(request):
-            return cls.build_admin_ip_list_html(), gr.update(), "⚠️ 權限不足"
+            return cls.build_admin_ip_list_html(), gr.update(), ADMIN_NO_PERM_MSG
 
         target = (target_ip or "").strip()
-        if not target or "無可移除" in target:
-            return cls.build_admin_ip_list_html(), gr.update(choices=cls.get_admin_ip_remove_choices()), "請從選單中選取要移除的管理員 IP"
+        if not target or "無可移除" in target:  # 清單佔選的內部偵測標記（技術協定，非文案）
+            return cls.build_admin_ip_list_html(), gr.update(choices=cls.get_admin_ip_remove_choices()), ADMIN_IP_PICK_MSG
 
         current_list = cls.load_admin_ip_list()
         if target not in current_list:
             rem_choices = cls.get_admin_ip_remove_choices()
-            return cls.build_admin_ip_list_html(), gr.update(choices=rem_choices), f"⚠️ IP '{target}' 不在自訂名單中"
+            return cls.build_admin_ip_list_html(), gr.update(choices=rem_choices), ADMIN_IP_NOT_IN_LIST_MSG.format(target)
 
         current_list.remove(target)
         cls.save_admin_ip_list(current_list)
         logger.info("[Admin] Removed '%s' from admin IP list", target)
         rem_choices = cls.get_admin_ip_remove_choices()
         new_val = rem_choices[0] if rem_choices and "無可移除" not in rem_choices[0] else ""
-        return cls.build_admin_ip_list_html(), gr.update(choices=rem_choices, value=new_val), f"✅ 已將 IP '{target}' 從管理員名單中移除"
+        return cls.build_admin_ip_list_html(), gr.update(choices=rem_choices, value=new_val), ADMIN_IP_REMOVED_MSG.format(target)
 
     # ── 後端啟動資源門檻設定（Spec 2026-11-01 任務 2）────────────────────────
     # RAM／GPU 使用率／VRAM 三項門檻，管理員在頁面直接調整；
@@ -252,7 +297,7 @@ class AdminManager:
     @classmethod
     def on_save_system_thresholds(cls, min_ram_gb, max_gpu_util, min_vram_gb, request: gr.Request = None) -> str:
         if not cls.is_super_user(request):
-            return "⚠️ 權限不足：僅管理員可調整啟動資源門檻"
+            return ADMIN_NO_PERM_THRESHOLDS_MSG
         ok, msg = set_system_thresholds(min_ram_gb, max_gpu_util, min_vram_gb)
         if not ok:
             return f"❌ {msg}"
@@ -261,10 +306,11 @@ class AdminManager:
             "[Admin] Startup resource thresholds updated: RAM>=%gGB, GPU<=%g%%, VRAM>=%gGB",
             t["min_ram_gb"], t["max_gpu_util"], t["min_vram_gb"],
         )
-        return (
-            f"✅ {msg}\n\n"
-            f"目前生效門檻：可用記憶體 **≥ {t['min_ram_gb']:g} GB** ｜ "
-            f"GPU 使用率 **≤ {t['max_gpu_util']:g}%** ｜ 可用顯存 **≥ {t['min_vram_gb']:g} GB**"
+        return ADMIN_THRESHOLDS_SAVED_MD.format(
+            msg,
+            "{:g}".format(t["min_ram_gb"]),
+            "{:g}".format(t["max_gpu_util"]),
+            "{:g}".format(t["min_vram_gb"]),
         )
 
     @classmethod
@@ -279,27 +325,33 @@ class AdminManager:
         val_style = 'font-size: 1.25rem; font-weight: 700; color: #0f172a; margin-bottom: 4px;'
         sub_style = 'font-size: 0.8rem; color: #94a3b8;'
 
+        ram_sub = ADMIN_HW_SUB_FREE.format(d['ram_available_gb'], d['ram_percent'], "{:g}".format(t['min_ram_gb']))
+        vram_sub = ADMIN_HW_SUB_FREE.format(d['vram_free_gb'], d['vram_percent'], "{:g}".format(t['min_vram_gb']))
+        gpu_sub = ADMIN_HW_SUB_GPU.format("{:g}".format(t['max_gpu_util']))
+        disk_val = ADMIN_HW_VAL_DISK.format(d['disk_free_gb'])
+        disk_sub = ADMIN_HW_SUB_DISK.format(d['disk_total_gb'], d['disk_percent'])
+
         return f"""
         <div style="display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 8px;">
             <div style="{card_style}">
-                <div style="{title_style}">🧠 記憶體 (RAM)</div>
-                <div style="{val_style}">{d['ram_used_gb']} / {d['ram_total_gb']} GB</div>
-                <div style="{sub_style}">可用 {d['ram_available_gb']} GB ({d['ram_percent']}%)<br>啟動門檻：可用 ≥ {t['min_ram_gb']:g} GB</div>
+                <div style="{title_style}">{ADMIN_HW_TITLE_RAM}</div>
+                <div style="{val_style}">{ADMIN_HW_VAL_USAGE.format(d['ram_used_gb'], d['ram_total_gb'])}</div>
+                <div style="{sub_style}">{ram_sub}</div>
             </div>
             <div style="{card_style}">
-                <div style="{title_style}">⚡ GPU 核心負載</div>
+                <div style="{title_style}">{ADMIN_HW_TITLE_GPU}</div>
                 <div style="{val_style}">{d['gpu_util_pct']}%</div>
-                <div style="{sub_style}">晶片即時運算佔用<br>啟動門檻：≤ {t['max_gpu_util']:g}%</div>
+                <div style="{sub_style}">{gpu_sub}</div>
             </div>
             <div style="{card_style}">
-                <div style="{title_style}">🎮 GPU 顯存 (VRAM)</div>
-                <div style="{val_style}">{d['vram_used_gb']} / {d['vram_total_gb']} GB</div>
-                <div style="{sub_style}">可用 {d['vram_free_gb']} GB ({d['vram_percent']}%)<br>啟動門檻：可用 ≥ {t['min_vram_gb']:g} GB</div>
+                <div style="{title_style}">{ADMIN_HW_TITLE_VRAM}</div>
+                <div style="{val_style}">{ADMIN_HW_VAL_USAGE.format(d['vram_used_gb'], d['vram_total_gb'])}</div>
+                <div style="{sub_style}">{vram_sub}</div>
             </div>
             <div style="{card_style}">
-                <div style="{title_style}">💾 輸出磁碟空間</div>
-                <div style="{val_style}">{d['disk_free_gb']} GB 可用</div>
-                <div style="{sub_style}">總量 {d['disk_total_gb']} GB ({d['disk_percent']}% 已用)</div>
+                <div style="{title_style}">{ADMIN_HW_TITLE_DISK}</div>
+                <div style="{val_style}">{disk_val}</div>
+                <div style="{sub_style}">{disk_sub}</div>
             </div>
         </div>
         """
@@ -308,7 +360,7 @@ class AdminManager:
     def build_admin_queue_html(cls) -> str:
         q = get_comfyui_queue_status()
         if not q["online"]:
-            return '<div style="padding: 12px; background: #fff1f2; border: 1.5px solid #fecdd3; border-radius: 8px; color: #e11d48; font-weight: 600;">🔴 ComfyUI 後端未連線</div>'
+            return ADMIN_QUEUE_OFFLINE_HTML
 
         running = q.get("running", [])
         pending = q.get("pending", [])
@@ -316,9 +368,9 @@ class AdminManager:
         running_html = ""
         if running:
             p_id = running[0][1] if len(running[0]) > 1 else str(running[0])
-            running_html = f'<div style="margin-bottom: 8px; color: #1e293b;">⚡ <b>正在運算任務</b>：<code>{p_id}</code></div>'
+            running_html = ADMIN_QUEUE_RUNNING_HTML.format(p_id)
         else:
-            running_html = '<div style="margin-bottom: 8px; color: #64748b;">☕ 目前無正在執行的生成任務</div>'
+            running_html = ADMIN_QUEUE_IDLE_HTML
 
         pending_html = ""
         if pending:
@@ -326,9 +378,9 @@ class AdminManager:
             for idx, item in enumerate(pending, 1):
                 pid = item[1] if len(item) > 1 else str(item)
                 items.append(f"<li>#{idx} - <code>{pid}</code></li>")
-            pending_html = f'<div style="color: #1e293b;">⏳ <b>排隊中 ({len(pending)} 個)</b>：<ul style="margin: 4px 0 0 18px; padding: 0;">{"".join(items)}</ul></div>'
+            pending_html = ADMIN_QUEUE_PENDING_HTML.format(len(pending), "".join(items))
         else:
-            pending_html = '<div style="color: #64748b;">🟢 佇列無排隊中的任務</div>'
+            pending_html = ADMIN_QUEUE_PENDING_EMPTY_HTML
 
         return f"""
         <div style="background: #f8fafc; border: 1.5px solid #e2e8f0; border-radius: 8px; padding: 14px 18px;">
@@ -341,7 +393,7 @@ class AdminManager:
     def build_admin_devices_html(cls) -> str:
         summaries = task_manager.get_connected_devices_summary()
         if not summaries:
-            return '<div style="padding: 12px; color: #64748b;">暫無連線裝置紀錄</div>'
+            return ADMIN_DEVICES_EMPTY_HTML
 
         rows = []
         for s in summaries:
@@ -356,47 +408,42 @@ class AdminManager:
                 f'</tr>'
             )
 
-        return f"""
-        <table style="width: 100%; border-collapse: collapse; background: #ffffff; border: 1.5px solid #e2e8f0; border-radius: 8px; overflow: hidden; font-size: 0.9rem;">
-            <thead>
-                <tr style="background: #f8fafc; border-bottom: 1.5px solid #e2e8f0; text-align: left; color: #475569;">
-                    <th style="padding: 10px 12px;">裝置代碼 (Device ID)</th>
-                    <th style="padding: 10px 12px;">連線 IP</th>
-                    <th style="padding: 10px 12px;">總任務數</th>
-                    <th style="padding: 10px 12px;">成功生成</th>
-                    <th style="padding: 10px 12px;">最後活躍時間</th>
-                </tr>
-            </thead>
-            <tbody>
-                {"".join(rows)}
-            </tbody>
-        </table>
-        """
+        return (
+            '<table style="width: 100%; border-collapse: collapse; background: #ffffff; '
+            'border: 1.5px solid #e2e8f0; border-radius: 8px; overflow: hidden; font-size: 0.9rem;">\n'
+            "            " + ADMIN_DEVICES_THEAD_HTML + "\n"
+            "            <tbody>\n                " + "".join(rows) + "\n            </tbody>\n"
+            "        </table>"
+        )
 
     @classmethod
     def get_admin_device_filter_choices(cls) -> List[str]:
         summaries = task_manager.get_connected_devices_summary()
         dev_ids = [s["device_id"] for s in summaries if s.get("device_id")]
-        return ["全部裝置"] + dev_ids
+        return [ADMIN_FILTER_ALL_DEVICES] + dev_ids
 
     @classmethod
-    def get_admin_tasks_dropdown_choices(cls, device_filter: str = "全部裝置", status_filter: str = "全部狀態") -> List[Tuple[str, str]]:
+    def get_admin_tasks_dropdown_choices(cls, device_filter: str = ADMIN_FILTER_ALL_DEVICES,
+                                         status_filter: str = ADMIN_FILTER_ALL_STATUS) -> List[Tuple[str, str]]:
         tasks = task_manager.get_all_tasks(device_filter, status_filter)
         if not tasks:
-            return [("— 查無符合條件的任務 —", "")]
+            return [(ADMIN_NO_TASKS_PLACEHOLDER, "")]
 
         choices = []
         for t in tasks:
             t_str = time.strftime("%m/%d %H:%M", time.localtime(t.created_at))
             short_prompt = (t.prompt[:25] + "...") if len(t.prompt) > 25 else t.prompt
             short_dev = t.device_id.split("_")[-1][:6] if "_" in t.device_id else t.device_id[:6]
-            status_icon = "✅" if t.status == "completed" else ("⚡" if t.status == "running" else ("⏳" if t.status == "queued" else "❌"))
-            label = f"{status_icon} [{t.task_type}] ID:{short_dev} | {t_str} | {short_prompt}"
+            status_icon = (ADMIN_TASK_ICON_DONE if t.status == "completed"
+                           else ADMIN_TASK_ICON_RUNNING if t.status == "running"
+                           else ADMIN_TASK_ICON_QUEUED if t.status == "queued"
+                           else ADMIN_TASK_ICON_FAILED)
+            label = ADMIN_TASK_CHOICE_FMT.format(status_icon, t.task_type, short_dev, t_str, short_prompt)
             choices.append((label, t.task_id))
         return choices
 
     @classmethod
-    def apply_task_filter(cls, device_filter: str = "全部裝置", status_filter: str = "全部狀態",
+    def apply_task_filter(cls, device_filter: str = ADMIN_FILTER_ALL_DEVICES, status_filter: str = ADMIN_FILTER_ALL_STATUS,
                           current_task_id: str = None, request: gr.Request = None):
         """
         Filter-driven refresh of the「選取歷史任務」+「篩選裝置」dropdowns.
@@ -416,19 +463,20 @@ class AdminManager:
         new_value = current_task_id if current_task_id in ids else ids[0]
 
         dev_choices = cls.get_admin_device_filter_choices()
-        dev_value = device_filter if device_filter in dev_choices else "全部裝置"
+        dev_value = device_filter if device_filter in dev_choices else ADMIN_FILTER_ALL_DEVICES
         return gr.update(choices=choices, value=new_value), gr.update(choices=dev_choices, value=dev_value)
 
     @classmethod
     def on_toggle_server_status(cls, request: gr.Request = None):
         if not cls.is_super_user(request):
-            return gr.update(), gr.update(), "⚠️ 權限不足，僅限本機管理員操作"
+            return gr.update(), gr.update(), ADMIN_NO_PERM_LOCAL_MSG
         cur = get_server_status()
         new_status = SERVER_STATUS_UPDATING if cur == SERVER_STATUS_OK else SERVER_STATUS_OK
         set_server_status(new_status)
-        btn_text = "切換為維護模式" if new_status == SERVER_STATUS_OK else "恢復正常服務"
+        btn_text = ADMIN_TOGGLE_TO_MAINT_BTN if new_status == SERVER_STATUS_OK else ADMIN_RESTORE_OK_BTN
         badge_html = cls.build_admin_status_badge()
-        msg = f"✅ 已成功切換為：{'🟢 正常服務中' if new_status == SERVER_STATUS_OK else '🔧 伺服器維護/更新中'}"
+        state_label = ADMIN_STATE_OK_TEXT if new_status == SERVER_STATUS_OK else COMMON_MAINT_BTN
+        msg = ADMIN_TOGGLE_OK_MD.format(state_label)
         return badge_html, gr.update(value=btn_text), msg
 
     # ── 電腦電源控制（Spec 2026-11-02 第 2 輪任務 1）─────────────────────────
@@ -438,58 +486,51 @@ class AdminManager:
     @classmethod
     def on_shutdown_pc(cls, request: gr.Request = None) -> str:
         if not cls.is_super_user(request):
-            return "⚠️ 權限不足：僅管理員可執行電腦關機"
+            return ADMIN_NO_PERM_SHUTDOWN_MSG
         delay = ADMIN_PC_SHUTDOWN_DELAY_S
         try:
             subprocess.Popen(
-                ["shutdown", "/s", "/t", str(delay), "/c",
-                 f"AI WebUI 管理員發起的關機（{delay} 秒後），可在管理頁點「取消關機」中止"],
+                ["shutdown", "/s", "/t", str(delay), "/c", ADMIN_SHUTDOWN_OS_NOTICE.format(delay)],
             )
         except Exception as e:
             logger.error("[Admin] PC shutdown scheduling failed: %s", e)
-            return f"❌ 無法安排關機：{e}"
+            return ADMIN_SHUTDOWN_FAIL_MSG.format(e)
         logger.warning("[Admin] PC shutdown scheduled in %ss by admin request", delay)
-        return (
-            f"🛑 已安排電腦在 **{delay} 秒後關機**。"
-            "要中止請立刻點下方「✋ 取消關機」，或留意畫面上的系統倒數提示。"
-        )
+        return ADMIN_SHUTDOWN_SCHEDULED_MSG.format(delay)
 
     @classmethod
     def on_cancel_shutdown(cls, request: gr.Request = None) -> str:
         if not cls.is_super_user(request):
-            return "⚠️ 權限不足：僅管理員可取消關機"
+            return ADMIN_NO_PERM_CANCEL_MSG
         try:
             result = subprocess.run(
                 ["shutdown", "/a"], capture_output=True, text=True, timeout=5,
             )
         except Exception as e:
             logger.error("[Admin] shutdown abort failed: %s", e)
-            return f"❌ 取消關機失敗：{e}"
+            return ADMIN_CANCEL_FAIL_MSG.format(e)
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "").strip()
-            return f"ℹ️ 目前沒有待中止的關機程序{'（' + detail + '）' if detail else ''}"
+            return ADMIN_CANCEL_NONE_MSG.format("（" + detail + "）" if detail else "")
         logger.warning("[Admin] Scheduled PC shutdown aborted by admin request")
-        return "✅ 已取消待執行的關機，電腦不會關掉。"
+        return ADMIN_CANCEL_OK_MSG
 
     @classmethod
     def on_free_vram(cls, request: gr.Request = None):
         if not cls.is_super_user(request):
-            return "⚠️ 權限不足，僅限本機管理員操作"
+            return ADMIN_NO_PERM_LOCAL_MSG
         ok, msg = free_comfyui_memory()
         return msg
 
     @classmethod
     def on_restart_backend(cls, request: gr.Request = None):
         if not cls.is_super_user(request):
-            return "⚠️ 權限不足，僅限本機管理員操作"
+            return ADMIN_NO_PERM_LOCAL_MSG
         # SAFEGUARD: never kill the backend while generation jobs are queued/running —
         # it orphans the active worker and silently discards everyone's queued work.
         active_count = task_manager.get_active_task_count()
         if active_count:
-            return (
-                f"⚠️ 無法重啟後端：仍有 {active_count} 個工作在排队或運算中，"
-                "請先以「🛑 中斷當前運算任務」與「🗑️ 清空所有等待中排隊佇列」清空後再重啟"
-            )
+            return ADMIN_RESTART_BUSY_MSG.format(active_count)
         stop_comfyui_backend()
         time.sleep(1)
         ok, msg = start_comfyui_backend()
@@ -498,20 +539,20 @@ class AdminManager:
     @classmethod
     def on_cancel_current_task(cls, request: gr.Request = None):
         if not cls.is_super_user(request):
-            return cls.build_admin_queue_html(), "⚠️ 權限不足"
+            return cls.build_admin_queue_html(), ADMIN_NO_PERM_MSG
         q = get_comfyui_queue_status()
         running = q.get("running", [])
         if running and len(running[0]) > 1:
             pid = running[0][1]
             interrupt_execution(pid)
             time.sleep(0.5)
-            return cls.build_admin_queue_html(), f"🛑 已送出中斷請求 (Prompt ID: {pid[:8]})"
-        return cls.build_admin_queue_html(), "目前無正在執行的生成任務"
+            return cls.build_admin_queue_html(), ADMIN_INTERRUPTED_MSG.format(pid[:8])
+        return cls.build_admin_queue_html(), ADMIN_QUEUE_NO_TASK_MSG
 
     @classmethod
     def on_clear_queue(cls, request: gr.Request = None):
         if not cls.is_super_user(request):
-            return cls.build_admin_queue_html(), "⚠️ 權限不足"
+            return cls.build_admin_queue_html(), ADMIN_NO_PERM_MSG
         ok, msg = clear_comfyui_queue()
         time.sleep(0.5)
         return cls.build_admin_queue_html(), msg
@@ -519,16 +560,19 @@ class AdminManager:
     @classmethod
     def on_select_admin_task(cls, selected_task_id: str, request: gr.Request = None):
         if not cls.is_super_user(request):
-            return None, "⚠️ 權限不足"
+            return None, ADMIN_NO_PERM_MSG
         if not selected_task_id:
-            return None, "請選擇上方任務"
+            return None, ADMIN_TASK_PICK_MSG
         task = task_manager.get_task(selected_task_id)
         if not task:
-            return None, "⚠️ 找不到該任務紀錄"
+            return None, ADMIN_TASK_MISSING_MSG
 
         video_path = task.video_path if task.video_path and os.path.exists(task.video_path) else None
         t_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(task.created_at))
-        status_str = "已完成" if task.status == "completed" else ("運算中" if task.status == "running" else ("排隊中" if task.status == "queued" else "失敗/中斷"))
+        status_str = (ADMIN_STATUS_DONE_LABEL if task.status == "completed"
+                      else ADMIN_STATUS_RUNNING_LABEL if task.status == "running"
+                      else ADMIN_STATUS_QUEUED_LABEL if task.status == "queued"
+                      else ADMIN_STATUS_FAILED_LABEL)
 
         params = task.params or {}
         w = params.get("width", "-")
@@ -536,32 +580,21 @@ class AdminManager:
         seed = params.get("seed", "-")
         duration = params.get("duration", "-")
 
-        info_md = f"""
-        ### 📜 任務詳細資料 (管理員檢視)
-        * **任務代碼**：`{task.task_id}`
-        * **所屬裝置**：`{task.device_id}`
-        * **任務類型**：`{task.task_type}`
-        * **當前狀態**：`{status_str}` ({task.message})
-        * **建立時間**：{t_str}
-        * **總耗時**：{task.elapsed} 秒
-        * **解析度**：`{w} x {h}`
-        * **隨機種子**：`{seed}`
-        * **影片長度**：`{duration} 秒`
-        * **產出檔案**：`{os.path.basename(task.video_path) if task.video_path else "無"}`
-        * **提示詞**：
-        ```text
-        {task.prompt}
-        ```
-        """
+        info_md = ADMIN_TASK_DETAIL_MD.format(
+            task.task_id, task.device_id, task.task_type, status_str, task.message,
+            t_str, task.elapsed, w, h, seed, duration,
+            os.path.basename(task.video_path) if task.video_path else "無",
+            task.prompt,
+        )
         return video_path, info_md
 
     @classmethod
     def on_delete_admin_task(cls, selected_task_id: str, device_filter: str, status_filter: str, request: gr.Request = None):
         if not cls.is_super_user(request):
-            return gr.update(), None, "⚠️ 權限不足", gr.update()
+            return gr.update(), None, ADMIN_NO_PERM_MSG, gr.update()
         if not selected_task_id:
             choices = cls.get_admin_tasks_dropdown_choices(device_filter, status_filter)
-            return gr.update(choices=choices), None, "請選擇上方任務", gr.update()
+            return gr.update(choices=choices), None, ADMIN_TASK_PICK_MSG, gr.update()
 
         task_manager.delete_task(selected_task_id, is_admin=True)
         choices = cls.get_admin_tasks_dropdown_choices(device_filter, status_filter)
@@ -571,16 +604,16 @@ class AdminManager:
         if new_value:
             new_video, new_info = cls.on_select_admin_task(new_value, request)
             return gr.update(choices=choices, value=new_value), new_video, new_info, gr.update(choices=dev_choices)
-        return gr.update(choices=choices, value=""), None, "✅ 任務已成功刪除", gr.update(choices=dev_choices)
+        return gr.update(choices=choices, value=""), None, ADMIN_TASK_DELETED_MSG, gr.update(choices=dev_choices)
 
     @classmethod
     def on_clean_failed_tasks(cls, device_filter: str, status_filter: str, request: gr.Request = None):
         if not cls.is_super_user(request):
-            return gr.update(), None, "⚠️ 權限不足", gr.update()
+            return gr.update(), None, ADMIN_NO_PERM_MSG, gr.update()
         count = task_manager.delete_failed_and_interrupted_tasks()
         choices = cls.get_admin_tasks_dropdown_choices(device_filter, status_filter)
         dev_choices = cls.get_admin_device_filter_choices()
-        msg = f"🧹 已清除 {count} 個失敗或中斷的任務"
+        msg = ADMIN_CLEANED_MSG.format(count)
         # value must stay inside choices (empty-list case = placeholder with value ""),
         # otherwise gradio rejects the selection with "not in the list of choices".
         return gr.update(choices=choices, value=choices[0][1]), None, msg, gr.update(choices=dev_choices)

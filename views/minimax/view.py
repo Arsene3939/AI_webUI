@@ -23,6 +23,7 @@ from config import (
     normalize_scheduler,
 )
 from task_manager import task_manager
+from ui_text import MINIMAX_TAB_HISTORY
 from utils.logger import get_logger
 
 logger = get_logger("MiniMaxView")
@@ -51,7 +52,7 @@ class MiniMaxView(ComfyUIBaseView):
                 self.i2v_tab.render()
                 self.t2v_tab.render()
                 self.r2v_tab.render()
-                with gr.Tab("📜 歷史紀錄"):
+                with gr.Tab(MINIMAX_TAB_HISTORY):
                     self.history_gallery.render()
                 self.admin_tab.render(session_ctx)
         return self.container

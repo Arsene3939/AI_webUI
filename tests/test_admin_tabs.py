@@ -183,7 +183,9 @@ class TestAdminTabHierarchy:
 
             assert tab.hw_dashboard_html is not None
             assert tab.api_base_input is not None
-            assert tab.test_conn_btn is not None
+            assert tab.api_key_input is not None
+            assert tab.save_conn_btn is not None
+            assert tab.refresh_status_btn is not None
             # Strata should not have ComfyUI specific VRAM purge button
             assert not hasattr(tab, "free_vram_btn")
 

@@ -5,6 +5,7 @@ import gradio as gr
 
 from core.admin_manager import AdminManager
 from views.strata.view import StrataView
+from ui_text import CHROME_HEADER_TITLE_STRATA, CHROME_PAGE_TITLE_STRATA
 
 from .shell import WebPageScaffold
 
@@ -14,8 +15,8 @@ class StrataPage(WebPageScaffold):
 
     def __init__(self):
         super().__init__(
-            title="💬 Strata 智慧助理｜AI 影片工作平台",                      # 瀏覽器分頁標題（任務 2）
-            header_title="💬 Strata 智慧助理系統",                            # 頁內 header 主標（任務 4）
+            title=CHROME_PAGE_TITLE_STRATA,                      # 瀏覽器分頁標題（任務 2）
+            header_title=CHROME_HEADER_TITLE_STRATA,             # 頁內 header 主標（任務 4）
         )
         self.strata_view: StrataView | None = None
         self.build()

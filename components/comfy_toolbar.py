@@ -16,6 +16,19 @@ from core.comfy_client import (
 )
 from core.admin_manager import AdminManager
 from task_manager import task_manager
+from ui_text import (
+    BACKEND_ALREADY_RUNNING_MSG,
+    BACKEND_BTN_RUNNING,
+    BACKEND_BTN_START,
+    BACKEND_BTN_STARTING,
+    BACKEND_CHECK_BTN,
+    BACKEND_FORCE_STOP_MSG,
+    BACKEND_GATE_MAINT_MSG,
+    BACKEND_STARTING_MSG,
+    BACKEND_STOP_BTN,
+    BACKEND_STOP_GUARD_MSG,
+    COMMON_MAINT_BTN,
+)
 from utils.logger import get_logger
 
 logger = get_logger("ComfyToolbar")
@@ -33,8 +46,8 @@ class ComfyToolbarComponent:
 
     def render(self) -> "ComfyToolbarComponent":
         with gr.Row() as self.row:
-            self.start_btn = gr.Button("⚡ 檢查後端模型狀態...", variant="secondary", scale=9)
-            self.stop_btn = gr.Button("🛑", variant="stop", scale=1, min_width=50)
+            self.start_btn = gr.Button(BACKEND_CHECK_BTN, variant="secondary", scale=9)
+            self.stop_btn = gr.Button(BACKEND_STOP_BTN, variant="stop", scale=1, min_width=50)
 
         self.status_msg = gr.Markdown("", elem_classes=["backend-status-box"])
         return self
@@ -42,33 +55,33 @@ class ComfyToolbarComponent:
     def poll_backend_status(self) -> dict:
         """Polls backend status dynamically to set button label and color."""
         if get_server_status() == SERVER_STATUS_UPDATING:
-            return gr.update(value="🔧 伺服器維護/更新中", variant="stop")
+            return gr.update(value=COMMON_MAINT_BTN, variant="stop")
         if self._is_backend_starting:
-            return gr.update(value="🟡 正在啟動後端模型...", variant="secondary")
+            return gr.update(value=BACKEND_BTN_STARTING, variant="secondary")
         ok, _ = check_server(COMFY_SERVER_URL)
         if ok:
-            return gr.update(value="🟢 後端模型運作中", variant="primary")
+            return gr.update(value=BACKEND_BTN_RUNNING, variant="primary")
         else:
-            return gr.update(value="⚡ 啟動後端模型", variant="secondary")
+            return gr.update(value=BACKEND_BTN_START, variant="secondary")
 
     def on_start_backend(self):
         """Handler for clicking start backend button with system resource pre-check."""
         if get_server_status() == SERVER_STATUS_UPDATING:
-            yield gr.update(value="🔧 伺服器維護/更新中", variant="stop"), "⚠️ 伺服器維護/更新中，暫停啟動後端"
+            yield gr.update(value=COMMON_MAINT_BTN, variant="stop"), BACKEND_GATE_MAINT_MSG
             return
 
         ok, _ = check_server(COMFY_SERVER_URL)
         if ok:
-            yield gr.update(value="🟢 後端模型運作中", variant="primary"), "🟢 後端模型已經在運作中，無須重複啟動"
+            yield gr.update(value=BACKEND_BTN_RUNNING, variant="primary"), BACKEND_ALREADY_RUNNING_MSG
             return
 
         res_ok, warning_msg, _ = check_system_resources()
         if not res_ok:
-            yield gr.update(value="⚡ 啟動後端模型", variant="secondary"), warning_msg
+            yield gr.update(value=BACKEND_BTN_START, variant="secondary"), warning_msg
             return
 
         self._is_backend_starting = True
-        yield gr.update(value="🟡 正在啟動後端模型...", variant="secondary"), "🟡 正在啟動後端模型，請稍候..."
+        yield gr.update(value=BACKEND_BTN_STARTING, variant="secondary"), BACKEND_STARTING_MSG
 
         try:
             ok, msg = start_comfyui_backend(COMFY_SERVER_URL, skip_resource_check=True)
@@ -101,16 +114,13 @@ class ComfyToolbarComponent:
             ok, msg = stop_comfyui_backend(COMFY_SERVER_URL)
             btn_update = self.poll_backend_status()
             if active:
-                return btn_update, f"🛑 後端模型已強制關閉（已中斷 {len(active)} 個進行中的工作）"
+                return btn_update, BACKEND_FORCE_STOP_MSG.format(len(active))
             return btn_update, f"{msg}"
 
         active = task_manager.get_active_tasks_overview()
         if active:
             btn_update = self.poll_backend_status()
-            return btn_update, (
-                f"⚠️ 無法關閉後端模型：目前仍有 {len(active)} 個工作正在排队或生成中，"
-                "請等待完成，或先到對應頁面按下停止按鈕"
-            )
+            return btn_update, BACKEND_STOP_GUARD_MSG.format(len(active))
 
         ok, msg = stop_comfyui_backend(COMFY_SERVER_URL)
         btn_update = self.poll_backend_status()

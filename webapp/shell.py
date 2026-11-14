@@ -18,6 +18,7 @@ from components.header import HeaderComponent, DEFAULT_HEADER_TITLE
 from components.dashboard_sidebar import DashboardNavComponent
 from components.comfy_toolbar import ComfyToolbarComponent
 from task_manager import task_manager
+from ui_text import CHROME_SCAFFOLD_TITLE_DEFAULT
 
 # Dark app theme: the entire UI chrome (header/sidebar/status boxes) is dark by design,
 # so the gradio theme is pinned dark (light AND dark variants of each token) to stop
@@ -131,7 +132,7 @@ class WebPageScaffold:
 
     module_key: str = ""
 
-    def __init__(self, title: str = "MiniMax-H3 AI Video WebUI", header_title: str = DEFAULT_HEADER_TITLE):
+    def __init__(self, title: str = CHROME_SCAFFOLD_TITLE_DEFAULT, header_title: str = DEFAULT_HEADER_TITLE):
         self.title = title
         self.header_title = header_title
         self.blocks: gr.Blocks | None = None

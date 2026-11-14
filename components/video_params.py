@@ -10,6 +10,7 @@ from PIL import Image
 import gradio as gr
 from config import (
     get_director_models,
+    DIRECTOR_STRATA_LABEL,
     list_comfy_models,
     DEFAULT_UNET,
     DEFAULT_CLIP,
@@ -30,6 +31,27 @@ from config import (
     normalize_sampler,
     normalize_scheduler,
 )
+from ui_text import (
+    DIRECTOR_MODEL_INFO,
+    DIRECTOR_MODEL_LABEL,
+    MINIMAX_ADVANCED_ACCORDION,
+    MINIMAX_ASPECT_RATIO_LABEL,
+    MINIMAX_DENOISE_LABEL,
+    MINIMAX_DURATION_LABEL,
+    MINIMAX_MODEL_AUDIO_VAE_LABEL,
+    MINIMAX_MODEL_CLIP_LABEL,
+    MINIMAX_MODEL_SECTION_MD,
+    MINIMAX_MODEL_UNET_LABEL,
+    MINIMAX_MODEL_VIDEO_VAE_LABEL,
+    MINIMAX_QUALITY_LABEL,
+    MINIMAX_RANDOM_SEED_BTN,
+    MINIMAX_RES_INFO_DEFAULT,
+    MINIMAX_RES_INFO_FMT,
+    MINIMAX_SAMPLER_LABEL,
+    MINIMAX_SCHEDULER_LABEL,
+    MINIMAX_SEED_LABEL,
+    MINIMAX_STEPS_LABEL,
+)
 
 
 def generate_random_seed() -> int:
@@ -47,17 +69,17 @@ def on_resolution_change(ar: str, quality_str: str, img_path: Optional[str] = No
                     orig_w, orig_h = im.size
                 w, h = calculate_dimensions_adaptive_ratio(orig_w, orig_h, quality_str, multiple=DEFAULT_MULTIPLE)
                 actual_mp = round((w * h) / 1_000_000, 2)
-                return f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP)"
+                return MINIMAX_RES_INFO_FMT.format(w, h, actual_mp)
             except Exception:
                 pass
         w, h = calculate_dimensions("16:9 (橫向風景)", quality_str, multiple=DEFAULT_MULTIPLE)
         actual_mp = round((w * h) / 1_000_000, 2)
-        return f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP)"
+        return MINIMAX_RES_INFO_FMT.format(w, h, actual_mp)
 
     ar = normalize_aspect_ratio(ar, allow_original=False)
     w, h = calculate_dimensions(ar, quality_str, multiple=DEFAULT_MULTIPLE)
     actual_mp = round((w * h) / 1_000_000, 2)
-    return f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP)"
+    return MINIMAX_RES_INFO_FMT.format(w, h, actual_mp)
 
 
 class VideoParamsComponent:
@@ -109,53 +131,55 @@ class VideoParamsComponent:
             self.aspect_ratio = gr.Dropdown(
                 choices=self.aspect_ratio_choices,
                 value=self.default_aspect_ratio,
-                label="長寬比",
+                label=MINIMAX_ASPECT_RATIO_LABEL,
                 scale=1,
                 filterable=False,
             )
             self.quality_level = gr.Dropdown(
                 choices=QUALITY_CHOICES,
                 value=self.default_quality,
-                label="畫質等級",
+                label=MINIMAX_QUALITY_LABEL,
                 scale=1,
                 filterable=False,
             )
 
         with gr.Row():
-            self.res_info = gr.Markdown("📐 **輸出解析度**：`1344 x 768` (~1.03 MP)")
+            self.res_info = gr.Markdown(MINIMAX_RES_INFO_DEFAULT)
 
         # Row 2: Duration, Steps（影格率固定 24fps，不開放調整 — Spec 任務 5）
         with gr.Row():
             with gr.Column():
                 self.duration = gr.Slider(
                     minimum=1.0, maximum=15.0, value=self.default_duration, step=0.5,
-                    label="影片時長 (秒)", scale=2
+                    label=MINIMAX_DURATION_LABEL, scale=2
                 )
             with gr.Column():
                 self.steps = gr.Slider(
                     minimum=1, maximum=50, value=self.default_steps, step=1,
-                    label="取樣步數", scale=2
+                    label=MINIMAX_STEPS_LABEL, scale=2
                 )
 
-        with gr.Accordion("⚙️ 進階參數", open=False):
+        with gr.Accordion(MINIMAX_ADVANCED_ACCORDION, open=False):
             with gr.Row():
-                self.seed = gr.Number(value=1, precision=0, label="隨機種子", scale=4)
-                self.rand_btn = gr.Button("🎲 隨機", scale=1)
+                self.seed = gr.Number(value=1, precision=0, label=MINIMAX_SEED_LABEL, scale=4)
+                self.rand_btn = gr.Button(MINIMAX_RANDOM_SEED_BTN, scale=1)
             with gr.Row():
-                self.denoise = gr.Slider(minimum=0.1, maximum=1.0, value=1.0, step=0.05, label="去噪強度")
+                self.denoise = gr.Slider(minimum=0.1, maximum=1.0, value=1.0, step=0.05, label=MINIMAX_DENOISE_LABEL)
             with gr.Row():
-                self.sampler = gr.Dropdown(choices=SAMPLER_CHOICES, value="res_multistep", label="取樣器", filterable=False)
-                self.scheduler = gr.Dropdown(choices=SCHEDULER_CHOICES, value="simple", label="調度器", filterable=False)
+                self.sampler = gr.Dropdown(choices=SAMPLER_CHOICES, value="res_multistep", label=MINIMAX_SAMPLER_LABEL, filterable=False)
+                self.scheduler = gr.Dropdown(choices=SCHEDULER_CHOICES, value="simple", label=MINIMAX_SCHEDULER_LABEL, filterable=False)
             if self.include_director_model:
+                # 方案 B（Spec 2026-11-03）：清單尾端常在的「Strata 智慧助理」選項——
+                # 選它就走本機 Strata 助理當導演（要先到 💬 Strata 頁啟動），不碰 ComfyUI。
                 director_models = get_director_models()
                 with gr.Row():
                     self.director_model = gr.Dropdown(
-                        choices=director_models,
-                        value=(director_models[0] if director_models else None),
-                        label="導演模型",
-                        info="「優化提示詞」按鈕使用的導演模型；放好新模型後清單會自動更新",
+                        choices=director_models + [DIRECTOR_STRATA_LABEL],
+                        value=(director_models[0] if director_models else DIRECTOR_STRATA_LABEL),
+                        label=DIRECTOR_MODEL_LABEL,
+                        info=DIRECTOR_MODEL_INFO,
                         filterable=False,
-                        interactive=bool(director_models),
+                        interactive=True,
                         allow_custom_value=False,
                     )
 
@@ -172,13 +196,13 @@ class VideoParamsComponent:
                 # 整個區（標題＋兩列下拉）包在同一個可見性受控的容器裡，
                 # 開頁 load 時 super-user 才看得到全部元素。
                 with gr.Column(visible=False) as self.model_row:
-                    gr.Markdown("🧠 **生成模型**（管理員限定；一般使用者一律使用預設模型）")
+                    gr.Markdown(MINIMAX_MODEL_SECTION_MD)
                     with gr.Row():
-                        self.model_unet = _mk("unet", DEFAULT_UNET, "生成模型 (UNET)")
-                        self.model_clip = _mk("clip", DEFAULT_CLIP, "文字Encoding模型 (CLIP)")
+                        self.model_unet = _mk("unet", DEFAULT_UNET, MINIMAX_MODEL_UNET_LABEL)
+                        self.model_clip = _mk("clip", DEFAULT_CLIP, MINIMAX_MODEL_CLIP_LABEL)
                     with gr.Row():
-                        self.model_video_vae = _mk("vae", DEFAULT_VIDEO_VAE, "影像 VAE")
-                        self.model_audio_vae = _mk("vae", DEFAULT_AUDIO_VAE, "音訊 VAE")
+                        self.model_video_vae = _mk("vae", DEFAULT_VIDEO_VAE, MINIMAX_MODEL_VIDEO_VAE_LABEL)
+                        self.model_audio_vae = _mk("vae", DEFAULT_AUDIO_VAE, MINIMAX_MODEL_AUDIO_VAE_LABEL)
 
         return self
 

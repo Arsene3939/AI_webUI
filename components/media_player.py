@@ -4,6 +4,18 @@ Video player output card and progress bar component.
 from typing import Optional, Any, Tuple
 import gradio as gr
 from utils.frame_extractor import extract_last_frame
+from ui_text import (
+    TASK_DOWNLOAD_FRAME_BTN,
+    TASK_EXTRACT_FRAME_BTN,
+    TASK_FRAME_FAILED_MSG,
+    TASK_FRAME_NO_VIDEO_MSG,
+    TASK_FRAME_READY_MSG,
+    TASK_GENERATE_BTN_DEFAULT,
+    TASK_OUTPUT_VIDEO_LABEL,
+    TASK_READY,
+    TASK_RECOVER_BTN,
+    TASK_STOP_GEN_BTN,
+)
 
 
 def build_progress_html(task_or_msg: Any) -> str:
@@ -12,14 +24,14 @@ def build_progress_html(task_or_msg: Any) -> str:
     Calculates percentage strictly based on sampling steps.
     """
     if isinstance(task_or_msg, str):
-        msg = task_or_msg or "🟢 準備就緒"
+        msg = task_or_msg or TASK_READY
         pct = 100 if "完成" in msg or "成功" in msg else 0
     elif task_or_msg is None:
-        msg = "🟢 準備就緒"
+        msg = TASK_READY
         pct = 0
     else:
         task = task_or_msg
-        msg = getattr(task, "message", "") or "🟢 準備就緒"
+        msg = getattr(task, "message", "") or TASK_READY
         status = getattr(task, "status", "")
         stage = getattr(task, "stage", "")
         step = getattr(task, "step", 0)
@@ -54,7 +66,7 @@ class VideoPlayerCardComponent:
     """Encapsulates status progress bar, recover button, video output player,
     and the last-frame extraction/download controls (Spec task 3)."""
 
-    def __init__(self, label: str = "生成影片"):
+    def __init__(self, label: str = TASK_OUTPUT_VIDEO_LABEL):
         self.label = label
         self.status: Optional[gr.HTML] = None
         self.recover_btn: Optional[gr.Button] = None
@@ -65,18 +77,18 @@ class VideoPlayerCardComponent:
 
     def render(self) -> "VideoPlayerCardComponent":
         with gr.Column(scale=1):
-            self.status = gr.HTML(build_progress_html("🟢 準備就緒"))
-            self.recover_btn = gr.Button("🔄 恢復上次輸入與成果", variant="secondary", elem_classes=["recover-btn"])
+            self.status = gr.HTML(build_progress_html(TASK_READY))
+            self.recover_btn = gr.Button(TASK_RECOVER_BTN, variant="secondary", elem_classes=["recover-btn"])
             self.output_video = gr.Video(label=self.label, autoplay=True, interactive=False)
             with gr.Row():
                 self.frame_btn = gr.Button(
-                    "🖼️ 提取最後一幀",
+                    TASK_EXTRACT_FRAME_BTN,
                     variant="secondary",
                     elem_classes=["recover-btn"],
                     scale=1,
                 )
                 self.frame_download = gr.DownloadButton(
-                    "💾 下載最後一幀",
+                    TASK_DOWNLOAD_FRAME_BTN,
                     variant="primary",
                     visible=False,
                     scale=1,
@@ -88,13 +100,13 @@ class VideoPlayerCardComponent:
         """Wires the last-frame extraction handler for this card (shared across MiniMax tabs)."""
         def on_extract_last_frame(video_path: Optional[str]) -> Tuple[Any, str]:
             if not video_path:
-                return gr.update(visible=False, value=None), "⚠️ 目前沒有可提取的影片，請先生成影片或按上方按鈕恢復上次成果"
+                return gr.update(visible=False, value=None), TASK_FRAME_NO_VIDEO_MSG
             frame_path = extract_last_frame(video_path)
             if not frame_path:
-                return gr.update(visible=False, value=None), "❌ 最後一幀提取失敗，請確認影片檔案完好後再試一次"
+                return gr.update(visible=False, value=None), TASK_FRAME_FAILED_MSG
             return (
                 gr.update(value=frame_path, visible=True),
-                "🖼️ 最後一幀已準備完成，請點擊右側「💾 下載最後一幀」儲存圖片",
+                TASK_FRAME_READY_MSG,
             )
 
         self.frame_btn.click(
@@ -112,7 +124,7 @@ class VideoPlayerCardComponent:
 class ActionButtonsComponent:
     """Encapsulates primary generate button and stop generation button."""
 
-    def __init__(self, generate_label: str = "🚀 開始生成影片"):
+    def __init__(self, generate_label: str = TASK_GENERATE_BTN_DEFAULT):
         self.generate_label = generate_label
         self.generate_btn: Optional[gr.Button] = None
         self.stop_btn: Optional[gr.Button] = None
@@ -125,5 +137,5 @@ class ActionButtonsComponent:
                 elem_classes=["primary-btn"],
                 visible=True,
             )
-            self.stop_btn = gr.Button("🛑 停止生成", variant="stop", visible=False)
+            self.stop_btn = gr.Button(TASK_STOP_GEN_BTN, variant="stop", visible=False)
         return self

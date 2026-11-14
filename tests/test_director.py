@@ -149,7 +149,8 @@ class TestDirectorModelAutoRefresh:
     def test_new_model_appears_without_restart(self, monkeypatch):
         db = self._scan(monkeypatch, ["qwen3vl_8b_nvfp4.safetensors"])
         d, st, state = db.refresh_model_choices(None, [])
-        assert d["choices"] == ["qwen3vl_8b_nvfp4.safetensors"]
+        # 方案 B：Strata 選項常在清單尾端
+        assert d["choices"] == ["qwen3vl_8b_nvfp4.safetensors", db.DIRECTOR_STRATA_LABEL]
         assert d["value"] == "qwen3vl_8b_nvfp4.safetensors" and d["interactive"] is True
         assert st["value"] == ""  # 就緒 → 清掉「未就緒」狀態行
         assert state == ["qwen3vl_8b_nvfp4.safetensors"]
@@ -164,9 +165,16 @@ class TestDirectorModelAutoRefresh:
     def test_model_removal_returns_to_not_ready(self, monkeypatch):
         db = self._scan(monkeypatch, [])
         d, st, state = db.refresh_model_choices("qwen3vl_8b_nvfp4.safetensors", ["qwen3vl_8b_nvfp4.safetensors"])
-        assert d["value"] is None and d["interactive"] is False
+        # ComfyUI 模型没了不代表清單空掉：退回常在的 Strata 選項，下拉仍可用
+        assert d["choices"] == [db.DIRECTOR_STRATA_LABEL]
+        assert d["value"] == db.DIRECTOR_STRATA_LABEL and d["interactive"] is True
         assert db.NOT_READY in st["value"]
         assert state == []
+
+    def test_strata_selection_survives_comfy_rescan(self, monkeypatch):
+        db = self._scan(monkeypatch, ["qwen3vl_8b_nvfp4.safetensors"])
+        d, _, _ = db.refresh_model_choices(db.DIRECTOR_STRATA_LABEL, [])
+        assert d["value"] == db.DIRECTOR_STRATA_LABEL  # 使用者選了 Strata，掃到 ComfyUI 模型也不被蓋掉
 
 
 class TestCallDirectorFlow:
@@ -182,10 +190,44 @@ class TestCallDirectorFlow:
         ok, note, msg = dc.call_director("hi")
         assert not ok and "維護" in msg
 
-    def test_no_model_ready_message(self, monkeypatch):
+    def test_no_model_falls_back_to_strata(self, monkeypatch):
+        """方案 B：ComfyUI 導演模型為空且沒選模型 → 預設走 Strata 選項；
+        助理沒開時給可操作的訊息（不是叫使用者去下載模型）。"""
         self._patch_env(monkeypatch, models=())
+        monkeypatch.setattr(dc.sc, "health", lambda timeout=3: None)
         ok, _, msg = dc.call_director("hi")
+        assert not ok and "Strata" in msg and "啟動助理模型" in msg
+
+    def test_unknown_model_with_no_models_still_prompts_download(self, monkeypatch):
+        self._patch_env(monkeypatch, models=())
+        ok, _, msg = dc.call_director("hi", model_name="不存在的模型.safetensors")
         assert not ok and "下載導演模型" in msg
+
+    def test_strata_director_path(self, monkeypatch):
+        self._patch_env(monkeypatch)  # comfy 模型存在也不影響：選了 Strata 就走 Strata
+        dc._director_cache.clear()
+        monkeypatch.setattr(dc.sc, "health", lambda timeout=3: {"status": "ok"})
+        monkeypatch.setattr(dc.sc, "vision_enabled", lambda: False)
+        captured = {}
+
+        def fake_collect(messages, temperature=None, filter_on=None, timeout=None):
+            captured["messages"] = messages
+            captured["filter_on"] = filter_on
+            return True, "【導演筆記】思路\n【English Prompt】a strata-directed shot", ""
+
+        monkeypatch.setattr(dc.sc, "chat_collect", fake_collect)
+        ok, note, prompt = dc.call_director(
+            "給她一個微笑", image_path=None, model_name=dc.DIRECTOR_STRATA_LABEL,
+        )
+        assert ok and note == "思路" and prompt == "a strata-directed shot"
+        assert captured["filter_on"] is False  # 導演創作模式：不去濾鏡
+        assert "【使用者提示詞草稿】" in captured["messages"][-1]["content"]
+
+    def test_strata_director_down_message(self, monkeypatch):
+        self._patch_env(monkeypatch)
+        monkeypatch.setattr(dc.sc, "health", lambda timeout=3: None)
+        ok, _, msg = dc.call_director("hi", model_name=dc.DIRECTOR_STRATA_LABEL)
+        assert not ok and "沒開著" in msg
 
     def test_backend_offline(self, monkeypatch):
         self._patch_env(monkeypatch, server_ok=False)

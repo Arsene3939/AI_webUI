@@ -16,6 +16,19 @@ from typing import Any, Dict, List, Optional
 
 import task_manager as _pkg  # late-bound constants & patch surface (HISTORY_FILE etc.)
 from config import COMFY_SERVER_URL
+from ui_text import (
+    ADMIN_FILTER_ACTIVE,
+    ADMIN_FILTER_ALL_DEVICES,
+    ADMIN_FILTER_ALL_STATUS,
+    ADMIN_FILTER_DONE,
+    ADMIN_FILTER_FAILED,
+    TASK_MSG_INTERRUPTED_BY_USER,
+    TASK_MSG_INTERRUPTED_SINGLE,
+    TASK_MSG_PREPROCESS,
+    TASK_MSG_QUEUED_AHEAD,
+    TASK_MSG_QUEUED_SOON,
+    TASK_MSG_WORKER_ERROR,
+)
 from utils.logger import get_logger
 
 from . import comfy_progress, history_store, media_archive, server_sync
@@ -72,7 +85,7 @@ class TaskManager:
         task = Task(task_id, task_type, prompt, saved_params, device_id=device_id, module=module)
         task.total_steps = int(saved_params.get("steps", 0))
         task.stage = "preprocessing"
-        task.message = "⚡ 前處理中：正在準備提交任務..."
+        task.message = TASK_MSG_PREPROCESS
         with self._lock:
             self._tasks[task_id] = task
         self._save_history()
@@ -227,7 +240,7 @@ class TaskManager:
                         t.cancel_event.set()
                         t.status = "interrupted"
                         t.stage = "interrupted"
-                        t.message = "⚠️ 任務已被手動中斷"
+                        t.message = TASK_MSG_INTERRUPTED_BY_USER
                         interrupted_ids.append(t.task_id)
                         if t.prompt_id:
                             prompts_to_cancel.append(t.prompt_id)
@@ -258,7 +271,7 @@ class TaskManager:
             t.cancel_event.set()
             t.status = "interrupted"
             t.stage = "interrupted"
-            t.message = "⚠️ 任務已被中斷"
+            t.message = TASK_MSG_INTERRUPTED_SINGLE
             prompt_id = t.prompt_id
             # Remove from the WebUI dispatch queue if it never got dispatched yet
             self._purge_dispatch_queue_locked([task_id])
@@ -330,15 +343,15 @@ class TaskManager:
         with self._lock:
             tasks = list(self._tasks.values())
 
-        if device_id_filter and device_id_filter != "全部裝置":
+        if device_id_filter and device_id_filter != ADMIN_FILTER_ALL_DEVICES:
             tasks = [t for t in tasks if t.device_id == device_id_filter]
 
-        if status_filter and status_filter != "全部狀態":
-            if status_filter == "已完成":
+        if status_filter and status_filter != ADMIN_FILTER_ALL_STATUS:
+            if status_filter == ADMIN_FILTER_DONE:
                 tasks = [t for t in tasks if t.status == "completed"]
-            elif status_filter == "生成中/排隊中":
+            elif status_filter == ADMIN_FILTER_ACTIVE:
                 tasks = [t for t in tasks if t.status in ("running", "queued")]
-            elif status_filter == "失敗/中斷":
+            elif status_filter == ADMIN_FILTER_FAILED:
                 tasks = [t for t in tasks if t.status in ("failed", "interrupted")]
 
         tasks.sort(key=lambda t: t.created_at, reverse=True)
@@ -431,9 +444,9 @@ class TaskManager:
             task.status = "queued"
             task.stage = "pending"
             if ahead > 0:
-                task.message = f"⏳ 排隊中...（前面還有 {ahead} 個工作）"
+                task.message = TASK_MSG_QUEUED_AHEAD.format(ahead)
             else:
-                task.message = "⏳ 排隊中...（即將提交）"
+                task.message = TASK_MSG_QUEUED_SOON
             self._dispatch_queue.append((task.task_id, prompt_graph, server_url))
             self._ensure_dispatcher_locked()
             self._dispatch_cond.notify_all()

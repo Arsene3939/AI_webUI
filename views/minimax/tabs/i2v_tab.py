@@ -34,6 +34,25 @@ from task_manager import task_manager
 from components.video_params import VideoParamsComponent
 from components.media_player import VideoPlayerCardComponent, ActionButtonsComponent, build_progress_html
 from components.director_block import DirectorBlockComponent
+from ui_text import (
+    MINIMAX_I2V_FIRST_FRAME_LABEL,
+    MINIMAX_I2V_LAST_FRAME_LABEL,
+    MINIMAX_I2V_PROMPT_PLACEHOLDER,
+    MINIMAX_MSG_NEED_FIRST_FRAME,
+    MINIMAX_MSG_NEED_PROMPT,
+    MINIMAX_MSG_PREPARING,
+    MINIMAX_MSG_RES_DETECT_FAILED,
+    MINIMAX_MSG_SERVER_UPDATING,
+    MINIMAX_MSG_UPLOAD_IMAGE_FAILED,
+    MINIMAX_MSG_UPLOADING_IMAGE,
+    MINIMAX_ORIG_SIZE_BADGE_FMT,
+    MINIMAX_PROMPT_LABEL,
+    MINIMAX_RES_INFO_FMT,
+    MINIMAX_TAB_I2V,
+    TASK_GENERATE_BTN_DEFAULT,
+    TASK_MSG_INTERRUPTED_BY_USER,
+    TASK_OUTPUT_VIDEO_LABEL,
+)
 from utils.logger import get_logger
 
 logger = get_logger("I2VTab")
@@ -44,7 +63,7 @@ def on_first_frame_change(img_path: Optional[str], current_quality_str: str):
     if not img_path or not os.path.exists(img_path):
         w, h = calculate_dimensions("16:9 (橫向風景)", current_quality_str, multiple=DEFAULT_MULTIPLE)
         actual_mp = round((w * h) / 1_000_000, 2)
-        return gr.update(), f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP)", ""
+        return gr.update(), MINIMAX_RES_INFO_FMT.format(w, h, actual_mp), ""
     try:
         current_quality_str = normalize_quality_choice(current_quality_str)
         with Image.open(img_path) as im:
@@ -52,11 +71,11 @@ def on_first_frame_change(img_path: Optional[str], current_quality_str: str):
         w, h = calculate_dimensions_adaptive_ratio(orig_w, orig_h, current_quality_str, multiple=DEFAULT_MULTIPLE)
         actual_mp = round((w * h) / 1_000_000, 2)
 
-        info_text = f"📐 **輸出解析度**：`{w} x {h}` (~{actual_mp} MP)"
-        badge_text = f"💡 *原始尺寸：`{orig_w} x {orig_h}`*"
+        info_text = MINIMAX_RES_INFO_FMT.format(w, h, actual_mp)
+        badge_text = MINIMAX_ORIG_SIZE_BADGE_FMT.format(orig_w, orig_h)
         return gr.update(value=ORIGINAL_RATIO_LABEL), info_text, badge_text
     except Exception as e:
-        return gr.update(), gr.update(), f"⚠️ 圖片解析度偵測失敗: {str(e)}"
+        return gr.update(), gr.update(), MINIMAX_MSG_RES_DETECT_FAILED.format(str(e))
 
 
 def handle_i2v_generate(
@@ -86,15 +105,15 @@ def handle_i2v_generate(
         device_id = f"dev_{uuid.uuid4().hex[:6]}"
 
     if get_server_status() == SERVER_STATUS_UPDATING:
-        yield build_progress_html("⚠️ 伺服器維護/更新中，暫停提交生成任務"), None, current_session_task, device_id
+        yield build_progress_html(MINIMAX_MSG_SERVER_UPDATING), None, current_session_task, device_id
         return
 
     if not first_frame:
-        yield build_progress_html("❌ 請上傳首幀圖片"), None, current_session_task, device_id
+        yield build_progress_html(MINIMAX_MSG_NEED_FIRST_FRAME), None, current_session_task, device_id
         return
 
     if not prompt or not prompt.strip():
-        yield build_progress_html("❌ 請輸入提示詞"), None, current_session_task, device_id
+        yield build_progress_html(MINIMAX_MSG_NEED_PROMPT), None, current_session_task, device_id
         return
 
     aspect_ratio = normalize_aspect_ratio(aspect_ratio)
@@ -106,15 +125,15 @@ def handle_i2v_generate(
 
     logger.info("[I2V] Request from device '%s': size=%dx%d, steps=%s, seed=%s, duration=%ss, prompt='%s'",
                 device_id, w, h, steps, seed, duration, prompt[:50])
-    yield build_progress_html("⚡ 前處理中：正在上傳圖片..."), None, current_session_task, device_id
+    yield build_progress_html(MINIMAX_MSG_UPLOADING_IMAGE), None, current_session_task, device_id
     try:
         first_frame_fn = upload_media_file(first_frame)
         last_frame_fn = upload_media_file(last_frame) if last_frame else None
     except Exception as e:
-        yield build_progress_html(f"❌ 上傳圖片失敗: 檢查後端是否已啟動({str(e)})"), None, current_session_task, device_id
+        yield build_progress_html(MINIMAX_MSG_UPLOAD_IMAGE_FAILED.format(str(e))), None, current_session_task, device_id
         return
 
-    yield build_progress_html("⚡ 前處理中：正在準備生成..."), None, current_session_task, device_id
+    yield build_progress_html(MINIMAX_MSG_PREPARING), None, current_session_task, device_id
 
     # 模型選擇把關（Spec 2026-11-02）：只有管理員的合法選擇會生效，其餘一律退回預設模型
     models = resolve_model_names(unet_name, clip_name, video_vae, audio_vae,
@@ -191,22 +210,22 @@ class I2VTab:
             include_director_model=True,  # 導演模型下拉進「⚙️ 進階參數」
             include_model_selectors=True,  # 管理員限定模型選擇（Spec 2026-11-02）
         )
-        self.action_btns = ActionButtonsComponent(generate_label="🚀 開始生成影片")
-        self.player_card = VideoPlayerCardComponent(label="生成影片")
+        self.action_btns = ActionButtonsComponent(generate_label=TASK_GENERATE_BTN_DEFAULT)
+        self.player_card = VideoPlayerCardComponent(label=TASK_OUTPUT_VIDEO_LABEL)
         self.director = DirectorBlockComponent()
 
     def render(self) -> "I2VTab":
-        with gr.Tab("🖼️ 圖生影片 (I2V)"):
+        with gr.Tab(MINIMAX_TAB_I2V):
             with gr.Row():
                 with gr.Column(scale=1):
                     with gr.Row():
-                        self.first_frame = gr.Image(type="filepath", label="首幀圖片", height=240)
-                        self.last_frame = gr.Image(type="filepath", label="尾幀圖片 (選填)", height=240)
+                        self.first_frame = gr.Image(type="filepath", label=MINIMAX_I2V_FIRST_FRAME_LABEL, height=240)
+                        self.last_frame = gr.Image(type="filepath", label=MINIMAX_I2V_LAST_FRAME_LABEL, height=240)
 
                     self.img_badge = gr.Markdown("")
                     self.prompt = gr.Textbox(
-                        label="提示詞",
-                        placeholder="描述畫面的動態、角色動作、鏡頭運動與音效（支援中英文）...",
+                        label=MINIMAX_PROMPT_LABEL,
+                        placeholder=MINIMAX_I2V_PROMPT_PLACEHOLDER,
                         lines=5,
                         value="",
                     )
@@ -235,7 +254,7 @@ class I2VTab:
             task_manager.interrupt_device_tasks(device_id=device_id, module="minimax")
             logger.info("[I2V] User stopped generation for device '%s'", device_id)
             return (
-                build_progress_html("⚠️ 任務已被手動中斷"),
+                build_progress_html(TASK_MSG_INTERRUPTED_BY_USER),
                 gr.update(visible=True),
                 gr.update(visible=False),
             )

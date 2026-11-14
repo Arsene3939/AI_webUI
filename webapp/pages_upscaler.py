@@ -6,6 +6,7 @@ import gradio as gr
 
 from core.admin_manager import AdminManager
 from views.upscaler.view import UpscalerView
+from ui_text import CHROME_HEADER_TITLE_UPSCALER, CHROME_PAGE_TITLE_UPSCALER
 
 from .shell import WebPageScaffold
 
@@ -15,8 +16,8 @@ class UpscalerPage(WebPageScaffold):
 
     def __init__(self):
         super().__init__(
-            title="🔍 畫質放大 (Video Upscaler)｜AI 影片工作平台",           # 瀏覽器分頁標題（任務 2）
-            header_title="🔍 影片畫質放大系統",                              # 頁內 header 主標（任務 4：三頁共用同一套介面元素）
+            title=CHROME_PAGE_TITLE_UPSCALER,                    # 瀏覽器分頁標題（任務 2）
+            header_title=CHROME_HEADER_TITLE_UPSCALER,           # 頁內 header 主標（任務 4：三頁共用同一套介面元素）
         )
         self.upscaler_view: UpscalerView | None = None
         self.build()

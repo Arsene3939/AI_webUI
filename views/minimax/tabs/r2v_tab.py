@@ -30,6 +30,28 @@ from core.comfy_client import upload_media_file
 from task_manager import task_manager
 from components.video_params import VideoParamsComponent
 from components.media_player import VideoPlayerCardComponent, ActionButtonsComponent, build_progress_html
+from ui_text import (
+    MINIMAX_MSG_NEED_PROMPT,
+    MINIMAX_MSG_PREPARING,
+    MINIMAX_MSG_SERVER_UPDATING,
+    MINIMAX_MSG_UPLOAD_REF_AUDIO_FAILED,
+    MINIMAX_MSG_UPLOAD_REF_IMG_FAILED,
+    MINIMAX_MSG_UPLOAD_REF_VIDEO_FAILED,
+    MINIMAX_MSG_UPLOADING_REF_MEDIA,
+    MINIMAX_PROMPT_LABEL,
+    MINIMAX_R2V_IMAGES_ACCORDION,
+    MINIMAX_R2V_IMG_SIZE_INFO,
+    MINIMAX_R2V_IMG_SIZE_LABEL,
+    MINIMAX_R2V_MEDIA_ACCORDION,
+    MINIMAX_R2V_PROMPT_PLACEHOLDER,
+    MINIMAX_R2V_REF_AUDIO_LABEL,
+    MINIMAX_R2V_REF_IMG_LABEL_FMT,
+    MINIMAX_R2V_REF_VIDEO_LABEL,
+    MINIMAX_TAB_R2V,
+    TASK_GENERATE_BTN_DEFAULT,
+    TASK_MSG_INTERRUPTED_BY_USER,
+    TASK_OUTPUT_VIDEO_LABEL,
+)
 from utils.logger import get_logger
 
 logger = get_logger("R2VTab")
@@ -67,11 +89,11 @@ def handle_r2v_generate(
         device_id = f"dev_{uuid.uuid4().hex[:6]}"
 
     if get_server_status() == SERVER_STATUS_UPDATING:
-        yield build_progress_html("⚠️ 伺服器維護/更新中，暫停提交生成任務"), None, current_session_task, device_id
+        yield build_progress_html(MINIMAX_MSG_SERVER_UPDATING), None, current_session_task, device_id
         return
 
     if not prompt or not prompt.strip():
-        yield build_progress_html("❌ 請輸入提示詞"), None, current_session_task, device_id
+        yield build_progress_html(MINIMAX_MSG_NEED_PROMPT), None, current_session_task, device_id
         return
 
     aspect_ratio = normalize_aspect_ratio(aspect_ratio)
@@ -84,7 +106,7 @@ def handle_r2v_generate(
     logger.info("[R2V] Request from device '%s': size=%dx%d, steps=%s, seed=%s, duration=%ss, prompt='%s'",
                 device_id, w, h, steps, seed, duration, prompt[:50])
 
-    yield build_progress_html("⚡ 前處理中：正在上傳參考素材..."), None, current_session_task, device_id
+    yield build_progress_html(MINIMAX_MSG_UPLOADING_REF_MEDIA), None, current_session_task, device_id
 
     ref_img_files = []
     for img in [ref_img_1, ref_img_2, ref_img_3, ref_img_4]:
@@ -93,7 +115,7 @@ def handle_r2v_generate(
                 fn = upload_media_file(img)
                 ref_img_files.append(fn)
             except Exception as e:
-                yield build_progress_html(f"❌ 上傳參考圖失敗: {str(e)}"), None, current_session_task, device_id
+                yield build_progress_html(MINIMAX_MSG_UPLOAD_REF_IMG_FAILED.format(str(e))), None, current_session_task, device_id
                 return
 
     ref_video_fn = None
@@ -101,7 +123,7 @@ def handle_r2v_generate(
         try:
             ref_video_fn = upload_media_file(ref_video)
         except Exception as e:
-            yield build_progress_html(f"❌ 上傳參考影片失敗: {str(e)}"), None, current_session_task, device_id
+            yield build_progress_html(MINIMAX_MSG_UPLOAD_REF_VIDEO_FAILED.format(str(e))), None, current_session_task, device_id
             return
 
     ref_audio_fn = None
@@ -109,10 +131,10 @@ def handle_r2v_generate(
         try:
             ref_audio_fn = upload_media_file(ref_audio)
         except Exception as e:
-            yield build_progress_html(f"❌ 上傳參考音訊失敗: {str(e)}"), None, current_session_task, device_id
+            yield build_progress_html(MINIMAX_MSG_UPLOAD_REF_AUDIO_FAILED.format(str(e))), None, current_session_task, device_id
             return
 
-    yield build_progress_html("⚡ 前處理中：正在準備生成..."), None, current_session_task, device_id
+    yield build_progress_html(MINIMAX_MSG_PREPARING), None, current_session_task, device_id
 
     # 模型選擇把關（Spec 2026-11-02）：只有管理員的合法選擇會生效，其餘一律退回預設模型
     models = resolve_model_names(unet_name, clip_name, video_vae, audio_vae,
@@ -199,36 +221,36 @@ class R2VTab:
             default_steps=20,
             include_model_selectors=True,  # 管理員限定模型選擇（Spec 2026-11-02）
         )
-        self.action_btns = ActionButtonsComponent(generate_label="🚀 開始生成影片")
-        self.player_card = VideoPlayerCardComponent(label="生成影片")
+        self.action_btns = ActionButtonsComponent(generate_label=TASK_GENERATE_BTN_DEFAULT)
+        self.player_card = VideoPlayerCardComponent(label=TASK_OUTPUT_VIDEO_LABEL)
 
     def render(self) -> "R2VTab":
-        with gr.Tab("🎬 參考生影片 (R2V)"):
+        with gr.Tab(MINIMAX_TAB_R2V):
             with gr.Row():
                 with gr.Column(scale=1):
                     self.prompt = gr.Textbox(
-                        label="提示詞",
-                        placeholder="描述如何結合參考素材（支援主體、動作、風格混合）...",
+                        label=MINIMAX_PROMPT_LABEL,
+                        placeholder=MINIMAX_R2V_PROMPT_PLACEHOLDER,
                         lines=4,
                         value="",
                     )
-                    with gr.Accordion("📎 參考影音素材 (選填)", open=False):
+                    with gr.Accordion(MINIMAX_R2V_MEDIA_ACCORDION, open=False):
                         with gr.Row():
-                            self.ref_video = gr.Video(label="參考影片")
-                            self.ref_audio = gr.Audio(type="filepath", label="參考音訊")
+                            self.ref_video = gr.Video(label=MINIMAX_R2V_REF_VIDEO_LABEL)
+                            self.ref_audio = gr.Audio(type="filepath", label=MINIMAX_R2V_REF_AUDIO_LABEL)
 
-                    with gr.Accordion("🖼️ 參考圖片素材 (1~4 張選填)", open=False):
+                    with gr.Accordion(MINIMAX_R2V_IMAGES_ACCORDION, open=False):
                         with gr.Row():
-                            self.ref_img_1 = gr.Image(type="filepath", label="參考圖 1")
-                            self.ref_img_2 = gr.Image(type="filepath", label="參考圖 2")
+                            self.ref_img_1 = gr.Image(type="filepath", label=MINIMAX_R2V_REF_IMG_LABEL_FMT.format(1))
+                            self.ref_img_2 = gr.Image(type="filepath", label=MINIMAX_R2V_REF_IMG_LABEL_FMT.format(2))
                         with gr.Row():
-                            self.ref_img_3 = gr.Image(type="filepath", label="參考圖 3")
-                            self.ref_img_4 = gr.Image(type="filepath", label="參考圖 4")
+                            self.ref_img_3 = gr.Image(type="filepath", label=MINIMAX_R2V_REF_IMG_LABEL_FMT.format(3))
+                            self.ref_img_4 = gr.Image(type="filepath", label=MINIMAX_R2V_REF_IMG_LABEL_FMT.format(4))
                         self.ref_image_size = gr.Radio(
                             choices=["match", "pad"],
                             value="match",
-                            label="參考圖縮放模式",
-                            info="match: 保持原始比例切齊；pad: 黑邊補齊",
+                            label=MINIMAX_R2V_IMG_SIZE_LABEL,
+                            info=MINIMAX_R2V_IMG_SIZE_INFO,
                         )
 
                     self.params_card.render()
@@ -247,7 +269,7 @@ class R2VTab:
             task_manager.interrupt_device_tasks(device_id=device_id, module="minimax")
             logger.info("[R2V] User stopped generation for device '%s'", device_id)
             return (
-                build_progress_html("⚠️ 任務已被手動中斷"),
+                build_progress_html(TASK_MSG_INTERRUPTED_BY_USER),
                 gr.update(visible=True),
                 gr.update(visible=False),
             )

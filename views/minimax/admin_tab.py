@@ -8,6 +8,29 @@ from core.comfy_admin_tab import ComfyUIAdminTab
 from core.admin_manager import AdminManager
 from core.director_builder import load_director_system_prompt, save_director_system_prompt
 from components.director_block import warn_html
+from ui_text import (
+    ADMIN_CLEAN_FAILED_BTN,
+    ADMIN_FILTER_ACTIVE,
+    ADMIN_FILTER_ALL_DEVICES,
+    ADMIN_FILTER_ALL_STATUS,
+    ADMIN_FILTER_DONE,
+    ADMIN_FILTER_FAILED,
+    ADMIN_DELETE_TASK_BTN,
+    ADMIN_DIRECTOR_PROMPT_LABEL,
+    ADMIN_DIRECTOR_RELOAD_BTN,
+    ADMIN_DIRECTOR_RELOAD_OK_HTML,
+    ADMIN_DIRECTOR_SAVE_BTN,
+    ADMIN_DIRECTOR_SAVED_OK_HTML,
+    ADMIN_DIRECTOR_SECTION_MD,
+    ADMIN_FILTER_DEVICE_LABEL,
+    ADMIN_FILTER_STATUS_LABEL,
+    ADMIN_MINIMAX_SECTION_HISTORY_MD,
+    ADMIN_MINIMAX_TAB_TITLE,
+    ADMIN_REFRESH_TASKS_BTN,
+    ADMIN_TASK_DETAIL_INIT_MD,
+    ADMIN_TASK_PICK_DD_LABEL,
+    ADMIN_VIDEO_PREVIEW_LABEL,
+)
 
 
 class MiniMaxAdminTab(ComfyUIAdminTab):
@@ -20,7 +43,7 @@ class MiniMaxAdminTab(ComfyUIAdminTab):
     """
 
     def __init__(self):
-        super().__init__(tab_title="⚙️ 管理員專區 (Super User)")
+        super().__init__(tab_title=ADMIN_MINIMAX_TAB_TITLE)
         self.device_filter: Optional[gr.Dropdown] = None
         self.status_filter: Optional[gr.Dropdown] = None
         self.refresh_all_tasks_btn: Optional[gr.Button] = None
@@ -36,55 +59,55 @@ class MiniMaxAdminTab(ComfyUIAdminTab):
 
     def render_comfy_content(self, session_ctx: Any) -> None:
         """Injects cross-device task history management specific to MiniMax-H3."""
-        gr.Markdown("### 🗂️ 全域跨裝置任務歷史紀錄")
+        gr.Markdown(ADMIN_MINIMAX_SECTION_HISTORY_MD)
         with gr.Row():
             self.device_filter = gr.Dropdown(
                 choices=AdminManager.get_admin_device_filter_choices(),
-                value="全部裝置",
-                label="篩選裝置",
+                value=ADMIN_FILTER_ALL_DEVICES,
+                label=ADMIN_FILTER_DEVICE_LABEL,
                 filterable=False,
                 allow_custom_value=False,
                 scale=3,
             )
             self.status_filter = gr.Dropdown(
-                choices=["全部狀態", "已完成", "生成中/排隊中", "失敗/中斷"],
-                value="全部狀態",
-                label="篩選狀態",
+                choices=[ADMIN_FILTER_ALL_STATUS, ADMIN_FILTER_DONE, ADMIN_FILTER_ACTIVE, ADMIN_FILTER_FAILED],
+                value=ADMIN_FILTER_ALL_STATUS,
+                label=ADMIN_FILTER_STATUS_LABEL,
                 filterable=False,
                 allow_custom_value=False,
                 scale=3,
             )
-            self.refresh_all_tasks_btn = gr.Button("🔄 刷新列表", variant="secondary", scale=1)
-            self.clean_failed_btn = gr.Button("🧹 一鍵清理失敗與中斷任務", variant="secondary", scale=2)
+            self.refresh_all_tasks_btn = gr.Button(ADMIN_REFRESH_TASKS_BTN, variant="secondary", scale=1)
+            self.clean_failed_btn = gr.Button(ADMIN_CLEAN_FAILED_BTN, variant="secondary", scale=2)
 
-        init_choices = AdminManager.get_admin_tasks_dropdown_choices("全部裝置", "全部狀態")
+        init_choices = AdminManager.get_admin_tasks_dropdown_choices(ADMIN_FILTER_ALL_DEVICES, ADMIN_FILTER_ALL_STATUS)
         with gr.Row():
             self.all_tasks_dropdown = gr.Dropdown(
                 choices=init_choices,
                 value=init_choices[0][1] if init_choices else "",
-                label="選取歷史任務 (全部裝置)",
+                label=ADMIN_TASK_PICK_DD_LABEL,
                 filterable=False,
                 allow_custom_value=False,
                 scale=8,
             )
-            self.delete_task_btn = gr.Button("🗑️ 刪除此任務", variant="stop", scale=2)
+            self.delete_task_btn = gr.Button(ADMIN_DELETE_TASK_BTN, variant="stop", scale=2)
 
         with gr.Row():
             with gr.Column(scale=1):
-                self.video_preview = gr.Video(label="產出影片預覽", autoplay=False)
+                self.video_preview = gr.Video(label=ADMIN_VIDEO_PREVIEW_LABEL, autoplay=False)
             with gr.Column(scale=1):
-                self.task_detail = gr.Markdown("請從上方選取任務檢視詳細參數")
+                self.task_detail = gr.Markdown(ADMIN_TASK_DETAIL_INIT_MD)
 
         # 導演系統提示詞維護區（admin tab 本身已是 Super User 限定，不需再另外門控）
-        gr.Markdown("### 🎬 導演系統提示詞")
+        gr.Markdown(ADMIN_DIRECTOR_SECTION_MD)
         self.director_prompt_editor = gr.Textbox(
             value=load_director_system_prompt(),
-            label="每次「優化提示詞」導演所遵循的指示（直接編輯後儲存，下一次生成立即生效）",
+            label=ADMIN_DIRECTOR_PROMPT_LABEL,
             lines=14,
         )
         with gr.Row():
-            self.director_prompt_reload_btn = gr.Button("↺ 從檔案重新載入", variant="secondary", scale=1)
-            self.director_prompt_save_btn = gr.Button("💾 儲存系統提示詞", variant="primary", scale=1)
+            self.director_prompt_reload_btn = gr.Button(ADMIN_DIRECTOR_RELOAD_BTN, variant="secondary", scale=1)
+            self.director_prompt_save_btn = gr.Button(ADMIN_DIRECTOR_SAVE_BTN, variant="primary", scale=1)
         self.director_prompt_status = gr.HTML("", elem_classes=["backend-status-box"])
 
     def register_comfy_events(self, session_ctx: Any) -> None:
@@ -116,13 +139,13 @@ class MiniMaxAdminTab(ComfyUIAdminTab):
         def reload_prompt_from_file():
             return (
                 gr.update(value=load_director_system_prompt()),
-                '<div class="director-ok">✅ 已從檔案載入最新內容</div>',
+                ADMIN_DIRECTOR_RELOAD_OK_HTML,
             )
 
         def save_prompt(text):
             ok, msg = save_director_system_prompt(text)
             if ok:
-                return f'<div class="director-ok">✅ {msg}</div>'
+                return ADMIN_DIRECTOR_SAVED_OK_HTML.format(msg)
             return warn_html(msg)
 
         self.director_prompt_reload_btn.click(

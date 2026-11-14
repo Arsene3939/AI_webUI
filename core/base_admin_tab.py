@@ -5,6 +5,34 @@ Follows Template Method and OOP inheritance pattern.
 from typing import Optional, Any
 import gradio as gr
 from core.admin_manager import AdminManager
+from ui_text import (
+    ADMIN_ACCESS_NOTE_MD,
+    ADMIN_CANCEL_SHUTDOWN_BTN,
+    ADMIN_IPLIST_DESC_MD,
+    ADMIN_IP_ADD_BTN,
+    ADMIN_IP_ADD_LABEL,
+    ADMIN_IP_ADD_PLACEHOLDER,
+    ADMIN_IP_REMOVE_BTN,
+    ADMIN_IP_REMOVE_LABEL,
+    ADMIN_PAGE_HEADING_MD,
+    ADMIN_POWER_DESC_MD,
+    ADMIN_REFRESH_DEVICES_BTN,
+    ADMIN_REFRESH_HW_BTN,
+    ADMIN_SECTION_DEVICES_MD,
+    ADMIN_SECTION_HW_MD,
+    ADMIN_SECTION_IPLIST_MD,
+    ADMIN_SECTION_POWER_MD,
+    ADMIN_SECTION_STATUS_MD,
+    ADMIN_SECTION_THRESHOLDS_MD,
+    ADMIN_SHUTDOWN_BTN,
+    ADMIN_SLIDER_MAX_GPU_LABEL,
+    ADMIN_SLIDER_MIN_RAM_LABEL,
+    ADMIN_SLIDER_MIN_VRAM_LABEL,
+    ADMIN_TAB_TITLE_DEFAULT,
+    ADMIN_THRESHOLDS_DESC_MD,
+    ADMIN_THRESHOLDS_SAVE_BTN,
+    ADMIN_TOGGLE_TO_MAINT_BTN,
+)
 
 
 class BaseAdminTab:
@@ -17,7 +45,7 @@ class BaseAdminTab:
     - Admin IP whitelist management (Add / Remove)
     """
 
-    def __init__(self, tab_title: str = "⚙️ 管理員專區"):
+    def __init__(self, tab_title: str = ADMIN_TAB_TITLE_DEFAULT):
         self.tab_title = tab_title
         self.tab: Optional[gr.Tab] = None
         self.status_badge: Optional[gr.HTML] = None
@@ -56,81 +84,80 @@ class BaseAdminTab:
     def render(self, session_ctx: Any) -> gr.Tab:
         """Renders the common admin interface and calls subclass custom render hooks."""
         with gr.Tab(self.tab_title, visible=False) as self.tab:
-            gr.Markdown(f"## 🛠️ {self.tab_title}")
-            gr.Markdown("此分頁僅對本機操作者 (127.0.0.1) 或已授權之管理員 IP 開放。")
+            gr.Markdown(ADMIN_PAGE_HEADING_MD.format(self.tab_title))
+            gr.Markdown(ADMIN_ACCESS_NOTE_MD)
 
             # 1. Server Service Status Toggle
-            gr.Markdown("### 🚦 伺服器服務狀態切換")
+            gr.Markdown(ADMIN_SECTION_STATUS_MD)
             with gr.Row():
                 self.status_badge = gr.HTML(AdminManager.build_admin_status_badge(), scale=4)
-                self.toggle_status_btn = gr.Button("切換為維護模式", variant="stop", scale=2)
+                self.toggle_status_btn = gr.Button(ADMIN_TOGGLE_TO_MAINT_BTN, variant="stop", scale=2)
             self.op_msg = gr.Markdown("", elem_classes=["backend-status-box"])
 
             self.auto_refresh_timer = gr.Timer(value=5.0)
 
             # 2. Hardware Resource Dashboard
-            gr.Markdown("### 🖥️ 硬體資源即時狀態 (Hardware Dashboard)")
+            gr.Markdown(ADMIN_SECTION_HW_MD)
             self.hw_dashboard_html = gr.HTML(AdminManager.build_admin_hw_dashboard_html())
-            self.refresh_hw_btn = gr.Button("🔄 刷新硬體狀態", variant="secondary")
+            self.refresh_hw_btn = gr.Button(ADMIN_REFRESH_HW_BTN, variant="secondary")
 
             # 3. Subclass Custom Content Hook (Inserted before device and IP sections)
             self.render_custom_content(session_ctx)
 
             # 4. Connected Devices Overview
-            gr.Markdown("### 📱 連線裝置總覽")
+            gr.Markdown(ADMIN_SECTION_DEVICES_MD)
             self.devices_html = gr.HTML(AdminManager.build_admin_devices_html())
-            self.refresh_devices_btn = gr.Button("🔄 刷新裝置列表", variant="secondary")
+            self.refresh_devices_btn = gr.Button(ADMIN_REFRESH_DEVICES_BTN, variant="secondary")
 
             # 5. Backend Startup Resource Thresholds
             from config import get_system_thresholds
             _t = get_system_thresholds()
-            gr.Markdown("### 📏 後端啟動資源門檻")
-            gr.Markdown("ComfyUI 啟動前的資源檢查標準；調整後按下儲存，下次啟動檢查立即採用新值。")
+            gr.Markdown(ADMIN_SECTION_THRESHOLDS_MD)
+            gr.Markdown(ADMIN_THRESHOLDS_DESC_MD)
             with gr.Row():
                 self.threshold_min_ram = gr.Slider(
                     minimum=0, maximum=128, step=1, value=_t["min_ram_gb"],
-                    label="最低可用記憶體 (RAM, GB)", scale=3,
+                    label=ADMIN_SLIDER_MIN_RAM_LABEL, scale=3,
                 )
                 self.threshold_max_gpu = gr.Slider(
                     minimum=0, maximum=100, step=5, value=_t["max_gpu_util"],
-                    label="GPU 使用率上限 (%)", scale=3,
+                    label=ADMIN_SLIDER_MAX_GPU_LABEL, scale=3,
                 )
                 self.threshold_min_vram = gr.Slider(
                     minimum=0, maximum=24, step=0.5, value=_t["min_vram_gb"],
-                    label="最低可用顯存 (VRAM, GB)", scale=3,
+                    label=ADMIN_SLIDER_MIN_VRAM_LABEL, scale=3,
                 )
             with gr.Row():
-                self.thresholds_save_btn = gr.Button("💾 儲存門檻設定", variant="primary", scale=2)
+                self.thresholds_save_btn = gr.Button(ADMIN_THRESHOLDS_SAVE_BTN, variant="primary", scale=2)
                 self.thresholds_status = gr.Markdown("")
 
             # 6. Admin IP Whitelist Settings
-            gr.Markdown("### 🛡️ 管理員名單設定")
-            gr.Markdown("在下方輸入指定裝置的 IP 位址，加入後該裝置連線時即可直接操作管理員專屬功能。")
+            gr.Markdown(ADMIN_SECTION_IPLIST_MD)
+            gr.Markdown(ADMIN_IPLIST_DESC_MD)
             self.ip_list_html = gr.HTML(AdminManager.build_admin_ip_list_html())
             with gr.Row():
                 self.new_ip_input = gr.Textbox(
-                    label="新增管理員 IP",
-                    placeholder="請輸入欲授權的 IP 位址，例如 192.168.0.11...",
+                    label=ADMIN_IP_ADD_LABEL,
+                    placeholder=ADMIN_IP_ADD_PLACEHOLDER,
                     scale=7,
                 )
-                self.add_ip_btn = gr.Button("➕ 加入名單", variant="primary", scale=2)
+                self.add_ip_btn = gr.Button(ADMIN_IP_ADD_BTN, variant="primary", scale=2)
             with gr.Row():
                 self.remove_ip_dropdown = gr.Dropdown(
                     choices=AdminManager.get_admin_ip_remove_choices(),
                     value=AdminManager.get_admin_ip_remove_choices()[0] if AdminManager.get_admin_ip_remove_choices() else "",
-                    label="選取欲移除的管理員 IP",
+                    label=ADMIN_IP_REMOVE_LABEL,
                     filterable=False,
                     scale=7,
                 )
-                self.remove_ip_btn = gr.Button("🗑️ 移除此 IP", variant="stop", scale=2)
+                self.remove_ip_btn = gr.Button(ADMIN_IP_REMOVE_BTN, variant="stop", scale=2)
 
             # 7. PC Power (Spec 2026-11-02 第 2 輪任務 1)
-            gr.Markdown("### 💻 電腦電源")
-            gr.Markdown("⚠️ 「電腦關機」會關閉這台執行 WebUI 與後端的實體電腦；"
-                        "按下後有短暫倒數緩衝，期間可點「取消關機」中止。")
+            gr.Markdown(ADMIN_SECTION_POWER_MD)
+            gr.Markdown(ADMIN_POWER_DESC_MD)
             with gr.Row():
-                self.shutdown_pc_btn = gr.Button("🛑 電腦關機", variant="stop", scale=2)
-                self.cancel_shutdown_btn = gr.Button("✋ 取消關機", variant="secondary", scale=2)
+                self.shutdown_pc_btn = gr.Button(ADMIN_SHUTDOWN_BTN, variant="stop", scale=2)
+                self.cancel_shutdown_btn = gr.Button(ADMIN_CANCEL_SHUTDOWN_BTN, variant="secondary", scale=2)
             self.pc_power_status = gr.Markdown("")
 
         return self.tab
